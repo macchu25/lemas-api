@@ -243,6 +243,19 @@ func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 	// Record daily user token quota consumption on fallback as well
 	recordUserDailyTokenConsumption(r.Context(), user, totalTokens, costUSD)
 
+	_ = db.DB.CreateUsageLog(r.Context(), &models.UsageLog{
+		ID:           "log-" + uuid.New().String(),
+		UserID:       apiKey.UserID,
+		ApiKeyID:     apiKey.ID,
+		Model:        req.Model,
+		PromptTokens: promptTokens,
+		CompTokens:   compTokens,
+		TotalTokens:  totalTokens,
+		CostUSD:      costUSD,
+		LatencyMs:    45,
+		Timestamp:    time.Now(),
+	})
+
 	var responseContent string
 	lastMsg := ""
 	if len(req.Messages) > 0 {

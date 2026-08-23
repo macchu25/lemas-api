@@ -52,9 +52,17 @@ func AdminOverviewHandler(w http.ResponseWriter, r *http.Request) {
 
 	var totalTokens int64
 	var totalCost float64
+	userLogTokens := make(map[string]int64)
 	for _, l := range logs {
 		totalTokens += int64(l.TotalTokens)
 		totalCost += l.CostUSD
+		userLogTokens[l.UserID] += int64(l.TotalTokens)
+	}
+
+	for _, u := range users {
+		if userLogTokens[u.ID] < u.DailyTokensUsed {
+			totalTokens += (u.DailyTokensUsed - userLogTokens[u.ID])
+		}
 	}
 
 	activeKeysCount := 0
@@ -67,12 +75,19 @@ func AdminOverviewHandler(w http.ResponseWriter, r *http.Request) {
 	rotator := services.InitKeyRotator()
 	rotatorStats := rotator.GetPoolStats()
 
+	totalReqCount := len(logs)
+	for _, u := range users {
+		if u.DailyTokensUsed > 0 && len(logs) == 0 {
+			totalReqCount++
+		}
+	}
+
 	resp := AdminOverviewResponse{
 		TotalUsers:         len(users),
 		TotalActiveKeys:    activeKeysCount,
 		TotalTokensUsed:    totalTokens,
 		TotalCostUSD:       totalCost,
-		TotalRequests:      len(logs),
+		TotalRequests:      totalReqCount,
 		UpstreamKeysHealth: "8/8 Keys Operational",
 		UpstreamStats:      rotatorStats,
 	}
@@ -113,6 +128,15 @@ func AdminUsersHandler(w http.ResponseWriter, r *http.Request) {
 
 	views := make([]AdminUserView, len(users))
 	for i, u := range users {
+		tokensUsed := userTokensMap[u.ID]
+		totalReqs := userReqsMap[u.ID]
+		if tokensUsed < u.DailyTokensUsed {
+			tokensUsed = u.DailyTokensUsed
+		}
+		if totalReqs == 0 && u.DailyTokensUsed > 0 {
+			totalReqs = 1
+		}
+
 		views[i] = AdminUserView{
 			ID:               u.ID,
 			Email:            u.Email,
@@ -121,12 +145,12 @@ func AdminUsersHandler(w http.ResponseWriter, r *http.Request) {
 			Plan:             u.Plan,
 			Balance:          u.Balance,
 			TokensAlloc:      u.Tokens,
-			TokensUsed:       userTokensMap[u.ID],
+			TokensUsed:       tokensUsed,
 			DailyTokensUsed:  u.DailyTokensUsed,
 			DailyTokensLimit: u.DailyTokensLimit,
 			GiftTokens:       u.GiftTokens,
 			CostUSD:          userCostMap[u.ID],
-			TotalRequests:    userReqsMap[u.ID],
+			TotalRequests:    totalReqs,
 			ActiveKeys:       userKeysCountMap[u.ID],
 			CreatedAt:        u.CreatedAt,
 		}
