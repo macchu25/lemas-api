@@ -56,8 +56,10 @@ func main() {
 	mux.HandleFunc("/api/admin/giftcodes", handlers.AdminAuthMiddleware(handlers.AdminGiftcodesHandler))
 	mux.HandleFunc("/api/admin/giftcodes/delete", handlers.AdminAuthMiddleware(handlers.AdminDeleteGiftcodeHandler))
 
-	// User Giftcode Redemption
+	// User Giftcode Redemption & Daily Image Quota
 	mux.HandleFunc("/api/user/giftcode/redeem", handlers.AuthMiddleware(handlers.RedeemGiftcodeHandler))
+	mux.HandleFunc("/api/user/image/quota", handlers.AuthMiddleware(handlers.ImageQuotaHandler))
+	mux.HandleFunc("/api/user/image/consume", handlers.AuthMiddleware(handlers.ImageConsumeHandler))
 
 	port := os.Getenv("PORT")
 	if port == "" {

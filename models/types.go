@@ -17,6 +17,9 @@ type User struct {
 	DailyTokensLimit   int64     `json:"daily_tokens_limit" bson:"daily_tokens_limit"` // default 1000 tokens/day
 	GiftTokens         int64     `json:"gift_tokens" bson:"gift_tokens"` // permanent gift tokens, never reset daily
 	LastTokenResetDate string    `json:"last_token_reset_date" bson:"last_token_reset_date"` // YYYY-MM-DD
+	DailyImagesUsed    int64     `json:"daily_images_used" bson:"daily_images_used"`
+	DailyImagesLimit   int64     `json:"daily_images_limit" bson:"daily_images_limit"` // default 5 images/day for free plan
+	LastImageResetDate string    `json:"last_image_reset_date" bson:"last_image_reset_date"` // YYYY-MM-DD
 	CreatedAt          time.Time `json:"created_at" bson:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at" bson:"updated_at"`
 }
