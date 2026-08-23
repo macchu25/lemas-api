@@ -9,8 +9,6 @@ import (
 
 	"xkiro-backend/db"
 	"xkiro-backend/models"
-
-	"github.com/google/uuid"
 )
 
 type CreateKeyRequest struct {
@@ -40,42 +38,13 @@ func ApiKeysHandler(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(keys)
 
 	case http.MethodPost:
-		var req CreateKeyRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
-			return
-		}
-
-		if req.Name == "" {
-			req.Name = "Secret Key"
-		}
-		if req.SpendLimit <= 0 {
-			req.SpendLimit = 50.0
-		}
-		if len(req.Permissions) == 0 {
-			req.Permissions = []string{"chat:completions", "messages"}
-		}
-
-		newKey := &models.ApiKey{
-			ID:          "key-" + uuid.New().String(),
-			UserID:      userID,
-			Key:         "lemas_sk_live_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:24],
-			Name:        req.Name,
-			SpendLimit:  req.SpendLimit,
-			SpendUsed:   0.0,
-			Status:      "active",
-			Permissions: req.Permissions,
-			CreatedAt:   time.Now(),
-		}
-
-		if err := db.DB.CreateApiKey(r.Context(), newKey); err != nil {
-			http.Error(w, `{"error":"failed to create key"}`, http.StatusInternalServerError)
-			return
-		}
-
+		// API Key creation is locked by admin policy
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(newKey)
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "Chức năng tạo API Key mới hiện đang tạm khóa. Vui lòng sử dụng API Key mặc định được cấp sẵn trong tài khoản của bạn.",
+		})
+		return
 
 	default:
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
