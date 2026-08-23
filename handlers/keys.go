@@ -34,8 +34,21 @@ func ApiKeysHandler(w http.ResponseWriter, r *http.Request) {
 		if keys == nil {
 			keys = []models.ApiKey{}
 		}
+
+		// Security hardening: Mask key secrets in list view (LEMAS-06)
+		maskedKeys := make([]models.ApiKey, len(keys))
+		for i, k := range keys {
+			masked := k
+			if len(k.Key) > 12 {
+				prefix := k.Key[:8]
+				suffix := k.Key[len(k.Key)-4:]
+				masked.Key = prefix + "••••••••" + suffix
+			}
+			maskedKeys[i] = masked
+		}
+
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(keys)
+		_ = json.NewEncoder(w).Encode(maskedKeys)
 
 	case http.MethodPost:
 		// API Key creation is locked by admin policy

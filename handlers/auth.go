@@ -147,12 +147,15 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Email == "" || req.Password == "" {
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	password := req.Password
+
+	if email == "" || password == "" {
 		http.Error(w, `{"error":"email and password are required"}`, http.StatusBadRequest)
 		return
 	}
 
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		http.Error(w, `{"error":"failed to hash password"}`, http.StatusInternalServerError)
 		return
@@ -161,9 +164,9 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 	userID := "user-" + uuid.New().String()
 	user := &models.User{
 		ID:                 userID,
-		Email:              req.Email,
+		Email:              email,
 		Password:           string(hashedPassword),
-		Name:               req.Name,
+		Name:               strings.TrimSpace(req.Name),
 		Role:               "user",
 		Balance:            0.00, // 0 USD initial balance
 		Tokens:             0,
@@ -177,13 +180,13 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if user.Name == "" {
-		user.Name = req.Email
+		user.Name = email
 	}
 
 	if err := db.DB.CreateUser(r.Context(), user); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Email này đã được đăng ký trong hệ thống"})
 		return
 	}
 
@@ -212,7 +215,8 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := db.DB.GetUserByEmail(r.Context(), req.Email)
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	user, err := db.DB.GetUserByEmail(r.Context(), email)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
