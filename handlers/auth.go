@@ -21,8 +21,9 @@ type RegisterRequest struct {
 }
 
 type LoginRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Email      string `json:"email"`
+	Password   string `json:"password"`
+	RememberMe bool   `json:"remember_me"`
 }
 
 type OAuthRequest struct {
@@ -241,7 +242,12 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 		_ = db.DB.UpdateUser(r.Context(), user)
 	}
 
-	token, err := GenerateJWT(user.ID, user.Email)
+	duration := 24 * time.Hour
+	if req.RememberMe {
+		duration = 30 * 24 * time.Hour // 30 days session
+	}
+
+	token, err := GenerateJWTWithDuration(user.ID, user.Email, duration)
 	if err != nil {
 		http.Error(w, `{"error":"failed to generate token"}`, http.StatusInternalServerError)
 		return

@@ -84,11 +84,16 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func GenerateJWT(userID, email string) (string, error) {
+	return GenerateJWTWithDuration(userID, email, 30*24*time.Hour)
+}
+
+func GenerateJWTWithDuration(userID, email string, duration time.Duration) (string, error) {
 	claims := jwt.MapClaims{
 		"user_id": userID,
 		"email":   email,
-		"exp":     time.Now().Add(7 * 24 * time.Hour).Unix(),
+		"exp":     time.Now().Add(duration).Unix(),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString(getJwtSecret())
 }
+
