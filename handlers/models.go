@@ -4,18 +4,57 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"xkiro-backend/db"
 	"xkiro-backend/models"
 )
 
+var (
+	modelsCacheMu   sync.RWMutex
+	cachedModels    []models.ModelItem
+	cacheExpiryTime time.Time
+)
+
+func getCachedOrFetchModels(r *http.Request) ([]models.ModelItem, error) {
+	modelsCacheMu.RLock()
+	if len(cachedModels) > 0 && time.Now().Before(cacheExpiryTime) {
+		result := cachedModels
+		modelsCacheMu.RUnlock()
+		return result, nil
+	}
+	modelsCacheMu.RUnlock()
+
+	modelsCacheMu.Lock()
+	defer modelsCacheMu.Unlock()
+
+	// Double-check after acquiring write lock
+	if len(cachedModels) > 0 && time.Now().Before(cacheExpiryTime) {
+		return cachedModels, nil
+	}
+
+	fetched, err := db.DB.GetAllModels(r.Context())
+	if err != nil {
+		if len(cachedModels) > 0 {
+			return cachedModels, nil // Gracefully return stale cache if DB is busy
+		}
+		return nil, err
+	}
+
+	cachedModels = fetched
+	cacheExpiryTime = time.Now().Add(5 * time.Minute) // 5 minutes in-memory TTL
+	return cachedModels, nil
+}
+
+// ModelsHandler: GET /api/models with High-Performance Memory Cache & Edge Headers
 func ModelsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
 
-	allModels, err := db.DB.GetAllModels(r.Context())
+	allModels, err := getCachedOrFetchModels(r)
 	if err != nil {
 		http.Error(w, `{"error":"failed to fetch models"}`, http.StatusInternalServerError)
 		return
@@ -50,6 +89,7 @@ func ModelsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "public, max-age=120, stale-while-revalidate=300")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"object": "list",
 		"data":   filtered,
@@ -70,5 +110,6 @@ func PricingTiersHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "public, max-age=300, stale-while-revalidate=600")
 	_ = json.NewEncoder(w).Encode(tiers)
 }
