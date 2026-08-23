@@ -37,10 +37,8 @@ func validateApiKey(r *http.Request) (*models.ApiKey, error) {
 	}
 
 	// 2. Try validating as user logged-in JWT session
-	token, jwtErr := jwt.Parse(apiKeyStr, func(t *jwt.Token) (interface{}, error) {
-		return getJwtSecret(), nil
-	})
-	if jwtErr == nil && token.Valid {
+	token, jwtErr := parseJwtWithFallbacks(apiKeyStr)
+	if jwtErr == nil && token != nil && token.Valid {
 		if claims, ok := token.Claims.(jwt.MapClaims); ok {
 			if userID, ok := claims["user_id"].(string); ok && userID != "" {
 				return &models.ApiKey{
