@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -48,6 +49,26 @@ func InitKeyRotator() *KeyRotator {
 			"sk-xt-ddbb0cd051193aaee331487e806190b0b1526bb7432cea16",
 		}
 
+		// Support overriding or expanding keys via .env (UPSTREAM_API_KEYS="sk-...,sk-...")
+		if envKeys := os.Getenv("UPSTREAM_API_KEYS"); envKeys != "" {
+			parts := strings.Split(envKeys, ",")
+			customKeys := make([]string, 0, len(parts))
+			for _, p := range parts {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					customKeys = append(customKeys, p)
+				}
+			}
+			if len(customKeys) > 0 {
+				rawKeys = customKeys
+			}
+		}
+
+		baseURL := os.Getenv("UPSTREAM_BASE_URL")
+		if baseURL == "" {
+			baseURL = "https://api.xkiro.com/v1"
+		}
+
 		keyObjects := make([]*UpstreamKey, len(rawKeys))
 		for i, k := range rawKeys {
 			keyObjects[i] = &UpstreamKey{
@@ -63,10 +84,10 @@ func InitKeyRotator() *KeyRotator {
 			httpClient: &http.Client{
 				Timeout: 60 * time.Second,
 			},
-			baseURL: "https://api.xkiro.com/v1",
+			baseURL: baseURL,
 		}
 
-		log.Printf("[Rotator] 🚀 Initialized Brain Engine with %d upstream rotating API keys", len(rawKeys))
+		log.Printf("[Rotator] 🚀 Initialized Brain Engine with %d upstream rotating API keys (Base: %s)", len(rawKeys), baseURL)
 	})
 
 	return DefaultRotator
