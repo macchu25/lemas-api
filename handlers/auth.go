@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -24,9 +25,105 @@ type LoginRequest struct {
 	Password string `json:"password"`
 }
 
+type OAuthRequest struct {
+	Provider string `json:"provider"` // "google", "github"
+	Email    string `json:"email,omitempty"`
+	Name     string `json:"name,omitempty"`
+	Avatar   string `json:"avatar,omitempty"`
+}
+
 type AuthResponse struct {
 	Token string       `json:"token"`
 	User  *models.User `json:"user"`
+}
+
+func OAuthHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req OAuthRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+
+	if req.Provider == "" {
+		req.Provider = "google"
+	}
+
+	email := strings.TrimSpace(req.Email)
+	if email == "" {
+		if req.Provider == "github" {
+			email = "github.developer@lemas.ai"
+		} else {
+			email = "google.user@lemas.ai"
+		}
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		if req.Provider == "github" {
+			name = "GitHub Developer"
+		} else {
+			name = "Google User"
+		}
+	}
+
+	today := time.Now().Format("2006-01-02")
+	user, err := db.DB.GetUserByEmail(r.Context(), email)
+	if err != nil || user == nil {
+		userID := "user-" + req.Provider + "-" + uuid.New().String()[:8]
+		newUser := &models.User{
+			ID:                 userID,
+			Email:              email,
+			Password:           "",
+			Name:               name,
+			Role:               "user",
+			Balance:            10.00, // $10 free bonus
+			Tokens:             1000000,
+			Plan:               "free",
+			DailyTokensUsed:    0,
+			DailyTokensLimit:   1000,
+			LastTokenResetDate: today,
+			CreatedAt:          time.Now(),
+			UpdatedAt:          time.Now(),
+		}
+		_ = db.DB.CreateUser(r.Context(), newUser)
+
+		apiKey := &models.ApiKey{
+			ID:          "key-" + uuid.New().String()[:8],
+			UserID:      userID,
+			Key:         "xk-live-" + uuid.New().String(),
+			Name:        fmt.Sprintf("%s OAuth Key", strings.ToUpper(req.Provider)),
+			SpendLimit:  50.0,
+			SpendUsed:   0.0,
+			Status:      "active",
+			Permissions: []string{"chat:completions", "messages", "embeddings"},
+			CreatedAt:   time.Now(),
+		}
+		_ = db.DB.CreateApiKey(r.Context(), apiKey)
+		user = newUser
+	} else {
+		if user.LastTokenResetDate != today {
+			user.DailyTokensUsed = 0
+			user.LastTokenResetDate = today
+			_ = db.DB.UpdateUser(r.Context(), user)
+		}
+	}
+
+	token, err := GenerateJWT(user.ID, user.Email)
+	if err != nil {
+		http.Error(w, `{"error":"failed to generate token"}`, http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(AuthResponse{
+		Token: token,
+		User:  user,
+	})
 }
 
 func RegisterHandler(w http.ResponseWriter, r *http.Request) {

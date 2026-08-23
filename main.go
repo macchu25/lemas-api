@@ -25,6 +25,7 @@ func main() {
 	// Auth & User
 	mux.HandleFunc("/api/auth/register", handlers.RegisterHandler)
 	mux.HandleFunc("/api/auth/login", handlers.LoginHandler)
+	mux.HandleFunc("/api/auth/oauth", handlers.OAuthHandler)
 	mux.HandleFunc("/api/auth/me", handlers.AuthMiddleware(handlers.GetMeHandler))
 	mux.HandleFunc("/api/user/topup", handlers.AuthMiddleware(handlers.TopupHandler))
 
