@@ -22,20 +22,57 @@ type ContextKey string
 
 const UserContextKey ContextKey = "user_id"
 
+var allowedOrigins = map[string]bool{
+	"https://lemas.io.vn":                 true,
+	"https://www.lemas.io.vn":             true,
+	"https://api.lemas.io.vn":             true,
+	"https://lemas-two.vercel.app":        true,
+	"http://localhost:3000":               true,
+	"http://localhost:8080":               true,
+	"http://127.0.0.1:3000":               true,
+	"http://127.0.0.1:8080":               true,
+}
+
+func isAllowedOrigin(origin string) bool {
+	if origin == "" {
+		return false
+	}
+	if allowedOrigins[origin] {
+		return true
+	}
+	if strings.HasSuffix(origin, ".lemas.io.vn") || strings.HasSuffix(origin, "-macchu25s-projects.vercel.app") {
+		return true
+	}
+	return false
+}
+
 // EnableCORS provides production-grade Cross-Origin Resource Sharing (CORS) headers
 func EnableCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
+
 		if origin != "" {
-			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Credentials", "true")
-		} else {
-			w.Header().Set("Access-Control-Allow-Origin", "*")
+			if isAllowedOrigin(origin) {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
+				w.Header().Set("Vary", "Origin")
+			} else {
+				// Origin is not in trusted allowlist.
+				// For public OpenAI/Anthropic API calls (/v1/...), allow uncredentialed access
+				if strings.HasPrefix(r.URL.Path, "/v1/") {
+					w.Header().Set("Access-Control-Allow-Origin", "*")
+				} else {
+					// Disallow untrusted origin on internal/admin API routes
+					if r.Method == http.MethodOptions {
+						w.WriteHeader(http.StatusForbidden)
+						return
+					}
+				}
+			}
 		}
 
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, Origin, X-Requested-With, x-api-key, anthropic-version, User-Agent, Cache-Control")
-		w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Type, Authorization")
 		w.Header().Set("Access-Control-Max-Age", "86400")
 
 		// Global Security Hardening Headers (LEMAS-09 / LEMAS-10 / LEMAS-17)
