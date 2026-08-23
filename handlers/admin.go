@@ -275,9 +275,22 @@ func AdminGiftcodesHandler(w http.ResponseWriter, r *http.Request) {
 
 		codeStr := strings.ToUpper(strings.TrimSpace(req.Code))
 		if codeStr == "" {
-			http.Error(w, `{"error":"Mã Giftcode không được để trống"}`, http.StatusBadRequest)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "Mã Giftcode không được để trống"})
 			return
 		}
+
+		existing, _ := db.DB.GetGiftcodeByCode(ctx, codeStr)
+		if existing != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"error": fmt.Sprintf("Mã Giftcode '%s' đã tồn tại trong hệ thống!", codeStr),
+			})
+			return
+		}
+
 		if req.Tokens <= 0 {
 			req.Tokens = 10000
 		}
@@ -297,7 +310,11 @@ func AdminGiftcodesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err := db.DB.CreateGiftcode(ctx, newGift); err != nil {
-			http.Error(w, `{"error":"failed to create giftcode"}`, http.StatusInternalServerError)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"error": fmt.Sprintf("Lỗi cơ sở dữ liệu khi tạo Giftcode: %v", err),
+			})
 			return
 		}
 
