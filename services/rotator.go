@@ -38,30 +38,21 @@ var (
 
 func InitKeyRotator() *KeyRotator {
 	once.Do(func() {
-		rawKeys := []string{
-			"sk-xt-48f3942453cd56c311a41a705bd60472ba18d80763c58ab2",
-			"sk-xt-65b72f4e618f50178d538a54e0d408b8d2004e4764fdb413",
-			"sk-xt-9bd3036e461878903414cb00b769ba3bc3507897e537ba6e",
-			"sk-xt-a34bd62e8cabc446cca3cf592f50be0e3b80fb4708926cd9",
-			"sk-xt-5bf5d8cd17c63f92fd29174cec14992284901ced04d89818",
-			"sk-xt-2babec9b4de550e3a6e4b01399fe5fcd008ad54eeb1b467a",
-			"sk-xt-473cac3a9466a0e18777da1d4587f263b156e44161b7c8f7",
-			"sk-xt-ddbb0cd051193aaee331487e806190b0b1526bb7432cea16",
-		}
+		rawKeys := []string{}
 
-		// Support overriding or expanding keys via .env (UPSTREAM_API_KEYS="sk-...,sk-...")
+		// Load keys exclusively from environment variables (.env / production env)
 		if envKeys := os.Getenv("UPSTREAM_API_KEYS"); envKeys != "" {
 			parts := strings.Split(envKeys, ",")
-			customKeys := make([]string, 0, len(parts))
 			for _, p := range parts {
 				p = strings.TrimSpace(p)
 				if p != "" {
-					customKeys = append(customKeys, p)
+					rawKeys = append(rawKeys, p)
 				}
 			}
-			if len(customKeys) > 0 {
-				rawKeys = customKeys
-			}
+		}
+
+		if len(rawKeys) == 0 {
+			log.Println("[Rotator] ⚠️ WARNING: No UPSTREAM_API_KEYS configured in .env!")
 		}
 
 		baseURL := os.Getenv("UPSTREAM_BASE_URL")
