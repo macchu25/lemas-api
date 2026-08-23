@@ -44,10 +44,7 @@ func OAuthHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req OAuthRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
-		return
-	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
 
 	if req.Provider == "" {
 		req.Provider = "google"
