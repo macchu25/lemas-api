@@ -26,10 +26,12 @@ type LoginRequest struct {
 }
 
 type OAuthRequest struct {
-	Provider string `json:"provider"` // "google", "github"
-	Email    string `json:"email,omitempty"`
-	Name     string `json:"name,omitempty"`
-	Avatar   string `json:"avatar,omitempty"`
+	Provider   string `json:"provider"` // "google", "github"
+	Credential string `json:"credential,omitempty"`
+	Token      string `json:"token,omitempty"`
+	Email      string `json:"email,omitempty"`
+	Name       string `json:"name,omitempty"`
+	Avatar     string `json:"avatar,omitempty"`
 }
 
 type AuthResponse struct {
@@ -44,28 +46,50 @@ func OAuthHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req OAuthRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+		return
+	}
 
 	if req.Provider == "" {
 		req.Provider = "google"
 	}
 
-	email := strings.TrimSpace(req.Email)
-	if email == "" {
-		if req.Provider == "github" {
-			email = "github.developer@lemas.ai"
-		} else {
-			email = "google.user@lemas.ai"
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	name := strings.TrimSpace(req.Name)
+
+	// If Google Credential / ID Token is provided, verify it directly with Google TokenInfo
+	tokenToVerify := req.Credential
+	if tokenToVerify == "" {
+		tokenToVerify = req.Token
+	}
+
+	if req.Provider == "google" && tokenToVerify != "" {
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := client.Get("https://oauth2.googleapis.com/tokeninfo?id_token=" + tokenToVerify)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			defer resp.Body.Close()
+			var googleClaims struct {
+				Email         string `json:"email"`
+				EmailVerified string `json:"email_verified"`
+				Name          string `json:"name"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&googleClaims); err == nil && googleClaims.Email != "" {
+				email = strings.ToLower(strings.TrimSpace(googleClaims.Email))
+				if googleClaims.Name != "" {
+					name = googleClaims.Name
+				}
+			}
 		}
 	}
 
-	name := strings.TrimSpace(req.Name)
+	if email == "" {
+		http.Error(w, `{"error":"Email xác thực OAuth không hợp lệ"}`, http.StatusBadRequest)
+		return
+	}
+
 	if name == "" {
-		if req.Provider == "github" {
-			name = "GitHub Developer"
-		} else {
-			name = "Google User"
-		}
+		name = "Lemas Developer"
 	}
 
 	today := time.Now().Format("2006-01-02")
@@ -219,7 +243,11 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 		duration = 30 * 24 * time.Hour // 30 days session
 	}
 
-	token, err := GenerateJWTWithDuration(user.ID, user.Email, duration)
+	role := user.Role
+	if role == "" {
+		role = "user"
+	}
+	token, err := GenerateJWTWithDuration(user.ID, user.Email, role, duration)
 	if err != nil {
 		http.Error(w, `{"error":"failed to generate token"}`, http.StatusInternalServerError)
 		return
@@ -264,61 +292,13 @@ type TopupRequest struct {
 	Amount float64 `json:"amount"`
 }
 
+// TopupHandler - Direct client-side arbitrary balance addition is permanently disabled.
+// Balances are credited exclusively via validated Webhooks, Giftcodes, or Admin adjustments.
 func TopupHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
-		return
-	}
-
-	userID, ok := r.Context().Value(UserContextKey).(string)
-	if !ok || userID == "" {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-		return
-	}
-
-	var req TopupRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Amount <= 0 {
-		http.Error(w, `{"error":"invalid topup amount"}`, http.StatusBadRequest)
-		return
-	}
-
-	user, err := db.DB.GetUserByID(r.Context(), userID)
-	if err != nil {
-		http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)
-		return
-	}
-
-	user.Balance += req.Amount
-	user.UpdatedAt = time.Now()
-	if err := db.DB.UpdateUser(r.Context(), user); err != nil {
-		http.Error(w, `{"error":"failed to update balance"}`, http.StatusInternalServerError)
-		return
-	}
-
-	userCode := "TOPUP88"
-	if len(user.ID) >= 6 {
-		userCode = strings.ToUpper(user.ID[len(user.ID)-6:])
-	}
-
-	tx := &models.TopupTransaction{
-		ID:        "tx-" + uuid.New().String()[:8],
-		UserID:    user.ID,
-		AmountUSD: req.Amount,
-		AmountVND: int64(req.Amount * 25400),
-		Method:    "SePay VietQR",
-		BankCode:  "MBBank",
-		Memo:      "LEMAS " + userCode,
-		Status:    "completed",
-		CreatedAt: time.Now(),
-	}
-	_ = db.DB.CreateTopupTransaction(r.Context(), tx)
-
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusForbidden)
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":     true,
-		"balance":     user.Balance,
-		"transaction": tx,
-		"message":     "Nạp tiền thành công",
+		"success": false,
+		"error":   "Tự nạp số dư trực tiếp từ client đã bị vô hiệu hóa vì lý do an toàn tài chính. Vui lòng quét mã VietQR để thanh toán tự động qua cổng SePay hoặc nhập mã Giftcode.",
 	})
 }
-

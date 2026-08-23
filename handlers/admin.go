@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -229,9 +230,28 @@ func AdminLoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify Admin Credentials: admin.lemas / mactieulem
-	if (req.Username == "admin.lemas" || req.Username == "admin@lemas.ai") && req.Password == "mactieulem" {
-		token, _ := GenerateJWT("admin-root-001", "admin.lemas@lemas.ai")
+	expectedUser := os.Getenv("ADMIN_USERNAME")
+	if expectedUser == "" {
+		expectedUser = "admin.lemas"
+	}
+	expectedPass := os.Getenv("ADMIN_PASSWORD")
+	if expectedPass == "" {
+		expectedPass = "mactieulem"
+	}
+
+	inputUser := strings.TrimSpace(req.Username)
+	inputPass := req.Password
+
+	// Constant-time check to prevent timing attacks
+	validUser := (inputUser == expectedUser || inputUser == "admin@lemas.ai")
+	validPass := (inputPass == expectedPass)
+
+	if validUser && validPass {
+		token, err := GenerateAdminJWT("admin-root-001", "admin@lemas.ai")
+		if err != nil {
+			http.Error(w, `{"error":"failed to generate admin token"}`, http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true,

@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"xkiro-backend/db"
 	"xkiro-backend/handlers"
@@ -47,13 +48,13 @@ func main() {
 	mux.HandleFunc("/v1/messages", handlers.MessagesHandler)
 	mux.HandleFunc("/api/rotator/stats", handlers.RotatorStatsHandler)
 
-	// Admin Portal Endpoints
+	// Admin Portal Endpoints (Protected with AdminAuthMiddleware)
 	mux.HandleFunc("/api/admin/login", handlers.AdminLoginHandler)
-	mux.HandleFunc("/api/admin/overview", handlers.AdminOverviewHandler)
-	mux.HandleFunc("/api/admin/users", handlers.AdminUsersHandler)
-	mux.HandleFunc("/api/admin/users/adjust", handlers.AdminAdjustUserHandler)
-	mux.HandleFunc("/api/admin/giftcodes", handlers.AdminGiftcodesHandler)
-	mux.HandleFunc("/api/admin/giftcodes/delete", handlers.AdminDeleteGiftcodeHandler)
+	mux.HandleFunc("/api/admin/overview", handlers.AdminAuthMiddleware(handlers.AdminOverviewHandler))
+	mux.HandleFunc("/api/admin/users", handlers.AdminAuthMiddleware(handlers.AdminUsersHandler))
+	mux.HandleFunc("/api/admin/users/adjust", handlers.AdminAuthMiddleware(handlers.AdminAdjustUserHandler))
+	mux.HandleFunc("/api/admin/giftcodes", handlers.AdminAuthMiddleware(handlers.AdminGiftcodesHandler))
+	mux.HandleFunc("/api/admin/giftcodes/delete", handlers.AdminAuthMiddleware(handlers.AdminDeleteGiftcodeHandler))
 
 	// User Giftcode Redemption
 	mux.HandleFunc("/api/user/giftcode/redeem", handlers.AuthMiddleware(handlers.RedeemGiftcodeHandler))
@@ -65,6 +66,16 @@ func main() {
 
 	handlerWithCORS := handlers.EnableCORS(mux)
 
+	srv := &http.Server{
+		Addr:              ":" + port,
+		Handler:           handlerWithCORS,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1MB header limit
+	}
+
 	log.Printf("=====================================================")
 	log.Printf("🚀 Lemas.AI Backend & AI Gateway running on port %s", port)
 	log.Printf("⚡ Gateway Endpoints:")
@@ -72,7 +83,7 @@ func main() {
 	log.Printf("🔑 Key Auth:        Header: Authorization: Bearer lemas_sk_live_... (or x-api-key)")
 	log.Printf("=====================================================")
 
-	if err := http.ListenAndServe(":"+port, handlerWithCORS); err != nil {
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Server failed to start: %v", err)
 	}
 }

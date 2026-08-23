@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"os"
 	"strings"
@@ -10,27 +11,19 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-func getJwtSecret() []byte {
-	secret := os.Getenv("JWT_SECRET")
-	if secret == "" {
-		secret = "lemas-secret-key-super-secure-token-2026"
-	}
-	return []byte(secret)
-}
-
 type ContextKey string
 
 const UserContextKey ContextKey = "user_id"
 
 var allowedOrigins = map[string]bool{
-	"https://lemas.io.vn":                 true,
-	"https://www.lemas.io.vn":             true,
-	"https://api.lemas.io.vn":             true,
-	"https://lemas-two.vercel.app":        true,
-	"http://localhost:3000":               true,
-	"http://localhost:8080":               true,
-	"http://127.0.0.1:3000":               true,
-	"http://127.0.0.1:8080":               true,
+	"https://lemas.io.vn":          true,
+	"https://www.lemas.io.vn":      true,
+	"https://api.lemas.io.vn":      true,
+	"https://lemas-two.vercel.app": true,
+	"http://localhost:3000":        true,
+	"http://localhost:8080":        true,
+	"http://127.0.0.1:3000":        true,
+	"http://127.0.0.1:8080":        true,
 }
 
 func isAllowedOrigin(origin string) bool {
@@ -57,7 +50,6 @@ func EnableCORS(next http.Handler) http.Handler {
 				w.Header().Set("Access-Control-Allow-Credentials", "true")
 				w.Header().Set("Vary", "Origin")
 			} else {
-				// Origin is not in trusted allowlist.
 				// For public OpenAI/Anthropic API calls (/v1/...), allow uncredentialed access
 				if strings.HasPrefix(r.URL.Path, "/v1/") {
 					w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -91,53 +83,72 @@ func EnableCORS(next http.Handler) http.Handler {
 	})
 }
 
-func parseJwtWithFallbacks(tokenStr string) (*jwt.Token, error) {
-	secrets := [][]byte{
-		getJwtSecret(),
-		[]byte("xkiro-secret-key-super-secure-token-2026"),
-		[]byte("lemas-secret-key-super-secure-token-2026"),
+func getJwtSecret() []byte {
+	secret := os.Getenv("JWT_SECRET")
+	if secret == "" {
+		secret = "lemas_prod_jwt_secret_9981a5e78b244cc99210"
 	}
-	if envSecret := os.Getenv("JWT_SECRET"); envSecret != "" {
-		secrets = append([][]byte{[]byte(envSecret)}, secrets...)
+	return []byte(secret)
+}
+
+func parseJwtToken(tokenStr string) (*jwt.Token, error) {
+	token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
+		// Strict algorithm check to prevent algorithm confusion attacks (e.g. none attack)
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, jwt.ErrSignatureInvalid
+		}
+		return getJwtSecret(), nil
+	})
+	if err == nil && token.Valid {
+		return token, nil
 	}
 
-	var lastErr error
-	for _, s := range secrets {
-		token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
-			return s, nil
-		})
-		if err == nil && token.Valid {
-			return token, nil
+	// Fallback secret check for backwards-compatible active sessions during transition
+	fallbackSecret := []byte("lemas-secret-key-super-secure-token-2026")
+	return jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, jwt.ErrSignatureInvalid
 		}
-		lastErr = err
-	}
-	return nil, lastErr
+		return fallbackSecret, nil
+	})
+}
+
+func parseJwtWithFallbacks(tokenStr string) (*jwt.Token, error) {
+	return parseJwtToken(tokenStr)
 }
 
 func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
-			http.Error(w, `{"error":"unauthorized, missing Bearer token"}`, http.StatusUnauthorized)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized, missing Bearer token"})
 			return
 		}
 
 		tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
-		token, err := parseJwtWithFallbacks(tokenStr)
+		token, err := parseJwtToken(tokenStr)
 		if err != nil || !token.Valid {
-			http.Error(w, `{"error":"invalid or expired token"}`, http.StatusUnauthorized)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid or expired token"})
 			return
 		}
 
 		claims, ok := token.Claims.(jwt.MapClaims)
 		if !ok {
-			http.Error(w, `{"error":"invalid token claims"}`, http.StatusUnauthorized)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid token claims"})
 			return
 		}
 
 		userID, ok := claims["user_id"].(string)
 		if !ok || userID == "" {
-			http.Error(w, `{"error":"invalid user_id in token"}`, http.StatusUnauthorized)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid user_id in token"})
 			return
 		}
 
@@ -146,17 +157,64 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func GenerateJWT(userID, email string) (string, error) {
-	return GenerateJWTWithDuration(userID, email, 30*24*time.Hour)
+// AdminAuthMiddleware strictly enforces that the caller possesses a valid admin-role JWT
+func AdminAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized, admin authentication required"})
+			return
+		}
+
+		tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
+		token, err := parseJwtToken(tokenStr)
+		if err != nil || !token.Valid {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid or expired admin token"})
+			return
+		}
+
+		claims, ok := token.Claims.(jwt.MapClaims)
+		if !ok {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid token claims"})
+			return
+		}
+
+		role, _ := claims["role"].(string)
+		if role != "admin" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "forbidden: requires administrator privileges"})
+			return
+		}
+
+		userID, _ := claims["user_id"].(string)
+		ctx := context.WithValue(r.Context(), UserContextKey, userID)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	}
 }
 
-func GenerateJWTWithDuration(userID, email string, duration time.Duration) (string, error) {
+func GenerateJWT(userID, email string) (string, error) {
+	return GenerateJWTWithDuration(userID, email, "user", 30*24*time.Hour)
+}
+
+func GenerateAdminJWT(adminID, email string) (string, error) {
+	return GenerateJWTWithDuration(adminID, email, "admin", 24*time.Hour)
+}
+
+func GenerateJWTWithDuration(userID, email, role string, duration time.Duration) (string, error) {
 	claims := jwt.MapClaims{
 		"user_id": userID,
 		"email":   email,
+		"role":    role,
 		"exp":     time.Now().Add(duration).Unix(),
+		"iat":     time.Now().Unix(),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString(getJwtSecret())
 }
-
