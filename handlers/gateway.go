@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -50,6 +51,45 @@ func validateApiKey(r *http.Request) (*models.ApiKey, error) {
 	return apiKey, nil
 }
 
+// checkAndVerifyUserDailyTokenLimit enforces the 1000 tokens/day limit per user
+func checkAndVerifyUserDailyTokenLimit(ctx context.Context, userID string) (*models.User, error) {
+	if userID == "" {
+		return nil, nil
+	}
+	user, err := db.DB.GetUserByID(ctx, userID)
+	if err != nil || user == nil {
+		return nil, nil
+	}
+
+	today := time.Now().Format("2006-01-02")
+	if user.LastTokenResetDate != today {
+		user.DailyTokensUsed = 0
+		user.LastTokenResetDate = today
+		_ = db.DB.UpdateUser(ctx, user)
+	}
+
+	limit := user.DailyTokensLimit
+	if limit <= 0 {
+		limit = 1000 // Standard 1000 tokens/day policy
+	}
+
+	if user.DailyTokensUsed >= limit {
+		return user, fmt.Errorf("Bạn đã sử dụng hết hạn mức %d tokens trong ngày hôm nay (Đã dùng: %d/%d tokens). Vui lòng quay lại vào ngày mai (sau 00:00) hoặc nâng cấp gói cước!", limit, user.DailyTokensUsed, limit)
+	}
+
+	return user, nil
+}
+
+func recordUserDailyTokenConsumption(ctx context.Context, user *models.User, tokens int) {
+	if user == nil || tokens <= 0 {
+		return
+	}
+	user.DailyTokensUsed += int64(tokens)
+	user.UpdatedAt = time.Now()
+	_ = db.DB.UpdateUser(ctx, user)
+	log.Printf("[Quota] 📊 User `%s` consumed %d tokens today (%d/%d used)", user.ID, tokens, user.DailyTokensUsed, user.DailyTokensLimit)
+}
+
 func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -65,6 +105,21 @@ func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 				"message": err.Error(),
 				"type":    "invalid_request_error",
 				"code":    "invalid_api_key",
+			},
+		})
+		return
+	}
+
+	// Strict Daily Token Quota Enforcement (Max 1000 tokens/day)
+	user, quotaErr := checkAndVerifyUserDailyTokenLimit(r.Context(), apiKey.UserID)
+	if quotaErr != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]interface{}{
+				"message": quotaErr.Error(),
+				"type":    "rate_limit_exceeded",
+				"code":    "daily_token_quota_exceeded",
 			},
 		})
 		return
@@ -110,6 +165,9 @@ func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 
 		costUSD := float64(totalTokens) * 0.00000014 // Norn.AI optimized price
 
+		// Record daily user token quota consumption
+		recordUserDailyTokenConsumption(r.Context(), user, totalTokens)
+
 		// Update key usage in MongoDB Atlas
 		_ = db.DB.UpdateApiKeyUsage(r.Context(), apiKey.ID, costUSD)
 		_ = db.DB.CreateUsageLog(r.Context(), &models.UsageLog{
@@ -136,6 +194,9 @@ func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 	promptTokens := 15
 	compTokens := 45
 	totalTokens := 60
+
+	// Record daily user token quota consumption on fallback as well
+	recordUserDailyTokenConsumption(r.Context(), user, totalTokens)
 
 	var responseContent string
 	lastMsg := ""
@@ -200,6 +261,20 @@ func MessagesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	user, quotaErr := checkAndVerifyUserDailyTokenLimit(r.Context(), apiKey.UserID)
+	if quotaErr != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"type": "error",
+			"error": map[string]string{
+				"type":    "rate_limit_error",
+				"message": quotaErr.Error(),
+			},
+		})
+		return
+	}
+
 	var raw map[string]interface{}
 	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 		http.Error(w, `{"error":"invalid json body"}`, http.StatusBadRequest)
@@ -210,6 +285,9 @@ func MessagesHandler(w http.ResponseWriter, r *http.Request) {
 	if model == "" {
 		model = "claude-3-7-sonnet"
 	}
+
+	tokensConsumed := 66
+	recordUserDailyTokenConsumption(r.Context(), user, tokensConsumed)
 
 	costUSD := 0.00005
 	_ = db.DB.UpdateApiKeyUsage(r.Context(), apiKey.ID, costUSD)

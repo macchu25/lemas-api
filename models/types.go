@@ -5,16 +5,19 @@ import (
 )
 
 type User struct {
-	ID        string    `json:"id" bson:"_id,omitempty"`
-	Email     string    `json:"email" bson:"email"`
-	Password  string    `json:"-" bson:"password"`
-	Name      string    `json:"name" bson:"name"`
-	Role      string    `json:"role" bson:"role"` // "user", "admin"
-	Balance   float64   `json:"balance" bson:"balance"` // in USD
-	Tokens    int64     `json:"tokens" bson:"tokens"` // token balance
-	Plan      string    `json:"plan" bson:"plan"` // "free", "pro", "pro-plus", "max", "ultra", "power"
-	CreatedAt time.Time `json:"created_at" bson:"created_at"`
-	UpdatedAt time.Time `json:"updated_at" bson:"updated_at"`
+	ID                 string    `json:"id" bson:"_id,omitempty"`
+	Email              string    `json:"email" bson:"email"`
+	Password           string    `json:"-" bson:"password"`
+	Name               string    `json:"name" bson:"name"`
+	Role               string    `json:"role" bson:"role"` // "user", "admin"
+	Balance            float64   `json:"balance" bson:"balance"` // in USD
+	Tokens             int64     `json:"tokens" bson:"tokens"` // token balance
+	Plan               string    `json:"plan" bson:"plan"` // "free", "pro", "pro-plus", "max", "ultra", "power"
+	DailyTokensUsed    int64     `json:"daily_tokens_used" bson:"daily_tokens_used"`
+	DailyTokensLimit   int64     `json:"daily_tokens_limit" bson:"daily_tokens_limit"` // default 1000 tokens/day
+	LastTokenResetDate string    `json:"last_token_reset_date" bson:"last_token_reset_date"` // YYYY-MM-DD
+	CreatedAt          time.Time `json:"created_at" bson:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at" bson:"updated_at"`
 }
 
 type ApiKey struct {

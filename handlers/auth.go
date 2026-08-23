@@ -54,16 +54,19 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 
 	userID := "user-" + uuid.New().String()
 	user := &models.User{
-		ID:        userID,
-		Email:     req.Email,
-		Password:  string(hashedPassword),
-		Name:      req.Name,
-		Role:      "user",
-		Balance:   10.00, // Welcome $10 free credits
-		Tokens:    1000000,
-		Plan:      "free",
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		ID:                 userID,
+		Email:              req.Email,
+		Password:           string(hashedPassword),
+		Name:               req.Name,
+		Role:               "user",
+		Balance:            10.00, // Welcome $10 free credits
+		Tokens:             1000000,
+		Plan:               "free",
+		DailyTokensUsed:    0,
+		DailyTokensLimit:   1000, // 1000 tokens per day limit
+		LastTokenResetDate: time.Now().Format("2006-01-02"),
+		CreatedAt:          time.Now(),
+		UpdatedAt:          time.Now(),
 	}
 
 	if user.Name == "" {
@@ -145,6 +148,17 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	today := time.Now().Format("2006-01-02")
+	if user.LastTokenResetDate != today {
+		user.DailyTokensUsed = 0
+		user.LastTokenResetDate = today
+		_ = db.DB.UpdateUser(r.Context(), user)
+	}
+	if user.DailyTokensLimit <= 0 {
+		user.DailyTokensLimit = 1000
+		_ = db.DB.UpdateUser(r.Context(), user)
+	}
+
 	token, err := GenerateJWT(user.ID, user.Email)
 	if err != nil {
 		http.Error(w, `{"error":"failed to generate token"}`, http.StatusInternalServerError)
@@ -169,6 +183,17 @@ func GetMeHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)
 		return
+	}
+
+	today := time.Now().Format("2006-01-02")
+	if user.LastTokenResetDate != today {
+		user.DailyTokensUsed = 0
+		user.LastTokenResetDate = today
+		_ = db.DB.UpdateUser(r.Context(), user)
+	}
+	if user.DailyTokensLimit <= 0 {
+		user.DailyTokensLimit = 1000
+		_ = db.DB.UpdateUser(r.Context(), user)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

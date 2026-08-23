@@ -253,15 +253,18 @@ func SeedData(store Store) {
 	// 5. Seed Demo User & Key
 	hashedPassword, _ := bcrypt.GenerateFromPassword([]byte("password123"), bcrypt.DefaultCost)
 	demoUser := models.User{
-		ID:        "user-demo-001",
-		Email:     "demo@lemas.ai",
-		Password:  string(hashedPassword),
-		Name:      "Lemas Developer",
-		Role:      "user",
-		Balance:   50.00,
-		Tokens:    15000000,
-		Plan:      "pro",
-		CreatedAt: time.Now(),
+		ID:                 "user-demo-001",
+		Email:              "demo@lemas.ai",
+		Password:           string(hashedPassword),
+		Name:               "Lemas Developer",
+		Role:               "user",
+		Balance:            50.00,
+		Tokens:             15000000,
+		Plan:               "pro",
+		DailyTokensUsed:    0,
+		DailyTokensLimit:   1000,
+		LastTokenResetDate: time.Now().Format("2006-01-02"),
+		CreatedAt:          time.Now(),
 	}
 	_ = store.CreateUser(ctx, &demoUser)
 
