@@ -78,8 +78,9 @@ func OAuthHandler(w http.ResponseWriter, r *http.Request) {
 			Password:           "",
 			Name:               name,
 			Role:               "user",
-			Balance:            10.00, // $10 free bonus
-			Tokens:             1000000,
+			Balance:            0.00, // 0 USD initial balance
+			Tokens:             0,
+			GiftTokens:         0,
 			Plan:               "free",
 			DailyTokensUsed:    0,
 			DailyTokensLimit:   1000,
@@ -92,8 +93,8 @@ func OAuthHandler(w http.ResponseWriter, r *http.Request) {
 		apiKey := &models.ApiKey{
 			ID:          "key-" + uuid.New().String()[:8],
 			UserID:      userID,
-			Key:         "xk-live-" + uuid.New().String(),
-			Name:        fmt.Sprintf("%s OAuth Key", strings.ToUpper(req.Provider)),
+			Key:         "lemas_sk_live_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:24],
+			Name:        fmt.Sprintf("%s Live Key", strings.ToUpper(req.Provider)),
 			SpendLimit:  50.0,
 			SpendUsed:   0.0,
 			Status:      "active",
@@ -153,8 +154,9 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 		Password:           string(hashedPassword),
 		Name:               req.Name,
 		Role:               "user",
-		Balance:            10.00, // Welcome $10 free credits
-		Tokens:             1000000,
+		Balance:            0.00, // 0 USD initial balance
+		Tokens:             0,
+		GiftTokens:         0,
 		Plan:               "free",
 		DailyTokensUsed:    0,
 		DailyTokensLimit:   1000, // 1000 tokens per day limit
@@ -174,12 +176,12 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create initial API Key for user
+	// Create initial unique API Key for user
 	apiKey := &models.ApiKey{
 		ID:          "key-" + uuid.New().String(),
 		UserID:      userID,
-		Key:         "xk-live-" + uuid.New().String(),
-		Name:        "Default Key",
+		Key:         "lemas_sk_live_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:24],
+		Name:        "Live Production Key",
 		SpendLimit:  50.0,
 		SpendUsed:   0.0,
 		Status:      "active",
@@ -187,20 +189,6 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:   time.Now(),
 	}
 	_ = db.DB.CreateApiKey(r.Context(), apiKey)
-
-	// Create initial Welcome Credit transaction
-	initTx := &models.TopupTransaction{
-		ID:        "tx-welcome-" + uuid.New().String()[:6],
-		UserID:    userID,
-		AmountUSD: 10.00,
-		AmountVND: 254000,
-		Method:    "Welcome Grant",
-		BankCode:  "Lemas Bonus",
-		Memo:      "LEMAS WELCOME",
-		Status:    "completed",
-		CreatedAt: time.Now(),
-	}
-	_ = db.DB.CreateTopupTransaction(r.Context(), initTx)
 
 	token, err := GenerateJWT(user.ID, user.Email)
 	if err != nil {

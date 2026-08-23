@@ -31,20 +31,6 @@ func validateApiKey(r *http.Request) (*models.ApiKey, error) {
 
 	apiKey, err := db.DB.GetApiKeyByValue(r.Context(), apiKeyStr)
 	if err != nil {
-		if apiKeyStr == "lemas-live-demo-key-88888888" || apiKeyStr == "norn-live-demo-key-88888888" {
-			demoKey := &models.ApiKey{
-				ID:          "key-demo-001",
-				UserID:      "user-demo-001",
-				Key:         apiKeyStr,
-				Name:        "Sandbox Demo Key",
-				SpendLimit:  1000.0,
-				Status:      "active",
-				Permissions: []string{"chat:completions", "messages"},
-				CreatedAt:   time.Now(),
-			}
-			_ = db.DB.CreateApiKey(r.Context(), demoKey)
-			return demoKey, nil
-		}
 		return nil, fmt.Errorf("invalid or revoked API key: %s", apiKeyStr)
 	}
 

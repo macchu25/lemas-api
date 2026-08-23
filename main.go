@@ -69,9 +69,7 @@ func main() {
 	log.Printf("🚀 Lemas.AI Backend & AI Gateway running on port %s", port)
 	log.Printf("⚡ Gateway Endpoints:")
 	log.Printf("   - OpenAI SDK:    http://localhost:%s/v1/chat/completions", port)
-	log.Printf("   - Anthropic SDK: http://localhost:%s/v1/messages", port)
-	log.Printf("🔑 Demo API Key:    lemas-live-demo-key-88888888")
-	log.Printf("👤 Demo Account:    demo@lemas.ai / password123")
+	log.Printf("🔑 Key Auth:        Header: Authorization: Bearer lemas_sk_live_... (or x-api-key)")
 	log.Printf("=====================================================")
 
 	if err := http.ListenAndServe(":"+port, handlerWithCORS); err != nil {
