@@ -52,6 +52,11 @@ func main() {
 	mux.HandleFunc("/api/admin/overview", handlers.AdminOverviewHandler)
 	mux.HandleFunc("/api/admin/users", handlers.AdminUsersHandler)
 	mux.HandleFunc("/api/admin/users/adjust", handlers.AdminAdjustUserHandler)
+	mux.HandleFunc("/api/admin/giftcodes", handlers.AdminGiftcodesHandler)
+	mux.HandleFunc("/api/admin/giftcodes/delete", handlers.AdminDeleteGiftcodeHandler)
+
+	// User Giftcode Redemption
+	mux.HandleFunc("/api/user/giftcode/redeem", handlers.AuthMiddleware(handlers.RedeemGiftcodeHandler))
 
 	port := os.Getenv("PORT")
 	if port == "" {

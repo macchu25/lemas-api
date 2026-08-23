@@ -15,9 +15,21 @@ type User struct {
 	Plan               string    `json:"plan" bson:"plan"` // "free", "pro", "pro-plus", "max", "ultra", "power"
 	DailyTokensUsed    int64     `json:"daily_tokens_used" bson:"daily_tokens_used"`
 	DailyTokensLimit   int64     `json:"daily_tokens_limit" bson:"daily_tokens_limit"` // default 1000 tokens/day
+	GiftTokens         int64     `json:"gift_tokens" bson:"gift_tokens"` // permanent gift tokens, never reset daily
 	LastTokenResetDate string    `json:"last_token_reset_date" bson:"last_token_reset_date"` // YYYY-MM-DD
 	CreatedAt          time.Time `json:"created_at" bson:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at" bson:"updated_at"`
+}
+
+type Giftcode struct {
+	ID        string    `json:"id" bson:"_id,omitempty"`
+	Code      string    `json:"code" bson:"code"`
+	Tokens    int64     `json:"tokens" bson:"tokens"` // Token reward amount (permanent)
+	MaxUses   int       `json:"max_uses" bson:"max_uses"` // Maximum number of redemptions
+	UsedCount int       `json:"used_count" bson:"used_count"` // Number of times redeemed
+	UsedBy    []string  `json:"used_by" bson:"used_by"` // User IDs who claimed this code
+	Status    string    `json:"status" bson:"status"` // "active", "exhausted"
+	CreatedAt time.Time `json:"created_at" bson:"created_at"`
 }
 
 type ApiKey struct {

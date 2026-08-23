@@ -60,6 +60,15 @@ type Store interface {
 	CreateTopupTransaction(ctx context.Context, tx *models.TopupTransaction) error
 	GetTopupTransactionsByUser(ctx context.Context, userID string) ([]models.TopupTransaction, error)
 
+	// Giftcodes
+	CreateGiftcode(ctx context.Context, code *models.Giftcode) error
+	GetAllGiftcodes(ctx context.Context) ([]models.Giftcode, error)
+	GetGiftcodeByCode(ctx context.Context, code string) (*models.Giftcode, error)
+	RedeemGiftcode(ctx context.Context, codeStr string, userID string) (*models.Giftcode, error)
+	DeleteGiftcode(ctx context.Context, id string) error
+	AddUserGiftTokens(ctx context.Context, userID string, tokens int64) error
+	ConsumeUserGiftTokens(ctx context.Context, userID string, tokens int64) error
+
 	// Admin
 	GetAllUsers(ctx context.Context) ([]models.User, error)
 	GetAllApiKeys(ctx context.Context) ([]models.ApiKey, error)
@@ -86,6 +95,7 @@ type MemoryStore struct {
 	messages     []models.ContactMessage
 	usageLogs    []models.UsageLog
 	topupTxs     []models.TopupTransaction
+	giftcodes    map[string]*models.Giftcode
 }
 
 func loadEnvFile() {
@@ -142,8 +152,9 @@ func InitDB() Store {
 
 	log.Println("[DB] MongoDB not reachable. Using built-in high-performance MemoryStore (zero setup required).")
 	memStore := &MemoryStore{
-		users:   make(map[string]*models.User),
-		apiKeys: make(map[string]*models.ApiKey),
+		users:     make(map[string]*models.User),
+		apiKeys:   make(map[string]*models.ApiKey),
+		giftcodes: make(map[string]*models.Giftcode),
 	}
 	DB = memStore
 	SeedData(memStore)
@@ -393,6 +404,104 @@ func (m *MemoryStore) GetAllApiKeys(ctx context.Context) ([]models.ApiKey, error
 		res = append(res, *k)
 	}
 	return res, nil
+}
+
+func (m *MemoryStore) CreateGiftcode(ctx context.Context, code *models.Giftcode) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.giftcodes[code.ID] = code
+	return nil
+}
+
+func (m *MemoryStore) GetAllGiftcodes(ctx context.Context) ([]models.Giftcode, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var res []models.Giftcode
+	for _, g := range m.giftcodes {
+		res = append(res, *g)
+	}
+	return res, nil
+}
+
+func (m *MemoryStore) GetGiftcodeByCode(ctx context.Context, codeStr string) (*models.Giftcode, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, g := range m.giftcodes {
+		if strings.EqualFold(g.Code, codeStr) {
+			copy := *g
+			return &copy, nil
+		}
+	}
+	return nil, fmt.Errorf("giftcode not found")
+}
+
+func (m *MemoryStore) RedeemGiftcode(ctx context.Context, codeStr string, userID string) (*models.Giftcode, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var found *models.Giftcode
+	for _, g := range m.giftcodes {
+		if strings.EqualFold(g.Code, codeStr) {
+			found = g
+			break
+		}
+	}
+	if found == nil {
+		return nil, fmt.Errorf("Mã Giftcode không tồn tại trên hệ thống")
+	}
+	if found.Status == "exhausted" || (found.MaxUses > 0 && found.UsedCount >= found.MaxUses) {
+		return nil, fmt.Errorf("Mã Giftcode này đã hết số lượt sử dụng")
+	}
+	for _, u := range found.UsedBy {
+		if u == userID {
+			return nil, fmt.Errorf("Bạn đã nhập mã Giftcode này trước đó rồi")
+		}
+	}
+
+	found.UsedBy = append(found.UsedBy, userID)
+	found.UsedCount++
+	if found.MaxUses > 0 && found.UsedCount >= found.MaxUses {
+		found.Status = "exhausted"
+	}
+
+	if u, ok := m.users[userID]; ok {
+		u.GiftTokens += found.Tokens
+		u.UpdatedAt = time.Now()
+	}
+
+	copy := *found
+	return &copy, nil
+}
+
+func (m *MemoryStore) DeleteGiftcode(ctx context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.giftcodes, id)
+	return nil
+}
+
+func (m *MemoryStore) AddUserGiftTokens(ctx context.Context, userID string, tokens int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if u, ok := m.users[userID]; ok {
+		u.GiftTokens += tokens
+		u.UpdatedAt = time.Now()
+		return nil
+	}
+	return fmt.Errorf("user not found")
+}
+
+func (m *MemoryStore) ConsumeUserGiftTokens(ctx context.Context, userID string, tokens int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if u, ok := m.users[userID]; ok {
+		u.GiftTokens -= tokens
+		if u.GiftTokens < 0 {
+			u.GiftTokens = 0
+		}
+		u.UpdatedAt = time.Now()
+		return nil
+	}
+	return fmt.Errorf("user not found")
 }
 
 // ================= MongoStore Methods =================
@@ -672,4 +781,98 @@ func (ms *MongoStore) GetTopupTransactionsByUser(ctx context.Context, userID str
 		return nil, err
 	}
 	return res, nil
+}
+
+func (ms *MongoStore) CreateGiftcode(ctx context.Context, code *models.Giftcode) error {
+	coll := ms.database.Collection("giftcodes")
+	_, err := coll.InsertOne(ctx, code)
+	return err
+}
+
+func (ms *MongoStore) GetAllGiftcodes(ctx context.Context) ([]models.Giftcode, error) {
+	coll := ms.database.Collection("giftcodes")
+	cur, err := coll.Find(ctx, bson.M{})
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var res []models.Giftcode
+	if err := cur.All(ctx, &res); err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+func (ms *MongoStore) GetGiftcodeByCode(ctx context.Context, codeStr string) (*models.Giftcode, error) {
+	coll := ms.database.Collection("giftcodes")
+	var code models.Giftcode
+	err := coll.FindOne(ctx, bson.M{"code": bson.M{"$regex": "^" + codeStr + "$", "$options": "i"}}).Decode(&code)
+	if err != nil {
+		return nil, err
+	}
+	return &code, nil
+}
+
+func (ms *MongoStore) RedeemGiftcode(ctx context.Context, codeStr string, userID string) (*models.Giftcode, error) {
+	code, err := ms.GetGiftcodeByCode(ctx, codeStr)
+	if err != nil {
+		return nil, fmt.Errorf("Mã Giftcode không tồn tại trên hệ thống")
+	}
+
+	if code.Status == "exhausted" || (code.MaxUses > 0 && code.UsedCount >= code.MaxUses) {
+		return nil, fmt.Errorf("Mã Giftcode này đã hết số lượt sử dụng")
+	}
+
+	for _, u := range code.UsedBy {
+		if u == userID {
+			return nil, fmt.Errorf("Bạn đã sử dụng mã Giftcode này trước đó rồi")
+		}
+	}
+
+	code.UsedBy = append(code.UsedBy, userID)
+	code.UsedCount++
+	if code.MaxUses > 0 && code.UsedCount >= code.MaxUses {
+		code.Status = "exhausted"
+	}
+
+	coll := ms.database.Collection("giftcodes")
+	_, err = coll.UpdateOne(ctx, bson.M{"_id": code.ID}, bson.M{
+		"$set": bson.M{
+			"used_count": code.UsedCount,
+			"used_by":    code.UsedBy,
+			"status":     code.Status,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Add GiftTokens to user in MongoDB
+	_ = ms.AddUserGiftTokens(ctx, userID, code.Tokens)
+
+	return code, nil
+}
+
+func (ms *MongoStore) DeleteGiftcode(ctx context.Context, id string) error {
+	coll := ms.database.Collection("giftcodes")
+	_, err := coll.DeleteOne(ctx, bson.M{"_id": id})
+	return err
+}
+
+func (ms *MongoStore) AddUserGiftTokens(ctx context.Context, userID string, tokens int64) error {
+	coll := ms.database.Collection("users")
+	_, err := coll.UpdateOne(ctx, bson.M{"_id": userID}, bson.M{
+		"$inc": bson.M{"gift_tokens": tokens},
+		"$set": bson.M{"updated_at": time.Now()},
+	})
+	return err
+}
+
+func (ms *MongoStore) ConsumeUserGiftTokens(ctx context.Context, userID string, tokens int64) error {
+	coll := ms.database.Collection("users")
+	_, err := coll.UpdateOne(ctx, bson.M{"_id": userID}, bson.M{
+		"$inc": bson.M{"gift_tokens": -tokens},
+		"$set": bson.M{"updated_at": time.Now()},
+	})
+	return err
 }

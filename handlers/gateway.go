@@ -74,7 +74,11 @@ func checkAndVerifyUserDailyTokenLimit(ctx context.Context, userID string) (*mod
 	}
 
 	if user.DailyTokensUsed >= limit {
-		return user, fmt.Errorf("Bạn đã sử dụng hết hạn mức %d tokens trong ngày hôm nay (Đã dùng: %d/%d tokens). Vui lòng quay lại vào ngày mai (sau 00:00) hoặc nâng cấp gói cước!", limit, user.DailyTokensUsed, limit)
+		// Daily quota exhausted; check if user has permanent GiftTokens
+		if user.GiftTokens <= 0 {
+			return user, fmt.Errorf("Bạn đã sử dụng hết hạn mức %d tokens trong ngày hôm nay (Đã dùng: %d/%d tokens). Bạn có thể nhập mã Giftcode hoặc đợi reset vào 00:00 ngày mai!", limit, user.DailyTokensUsed, limit)
+		}
+		log.Printf("[Quota] 🎁 User `%s` daily tokens exhausted (%d/%d), using GiftTokens balance (%d tokens available)", user.ID, user.DailyTokensUsed, limit, user.GiftTokens)
 	}
 
 	return user, nil
@@ -84,10 +88,25 @@ func recordUserDailyTokenConsumption(ctx context.Context, user *models.User, tok
 	if user == nil || tokens <= 0 {
 		return
 	}
-	user.DailyTokensUsed += int64(tokens)
-	user.UpdatedAt = time.Now()
-	_ = db.DB.UpdateUser(ctx, user)
-	log.Printf("[Quota] 📊 User `%s` consumed %d tokens today (%d/%d used)", user.ID, tokens, user.DailyTokensUsed, user.DailyTokensLimit)
+
+	limit := user.DailyTokensLimit
+	if limit <= 0 {
+		limit = 1000
+	}
+
+	if user.DailyTokensUsed < limit {
+		user.DailyTokensUsed += int64(tokens)
+		user.UpdatedAt = time.Now()
+		_ = db.DB.UpdateUser(ctx, user)
+		log.Printf("[Quota] 📊 User `%s` consumed %d daily tokens (%d/%d used today)", user.ID, tokens, user.DailyTokensUsed, limit)
+	} else if user.GiftTokens > 0 {
+		_ = db.DB.ConsumeUserGiftTokens(ctx, user.ID, int64(tokens))
+		user.GiftTokens -= int64(tokens)
+		if user.GiftTokens < 0 {
+			user.GiftTokens = 0
+		}
+		log.Printf("[Quota] 🎁 User `%s` consumed %d permanent GiftTokens (Remaining Gift: %d tokens)", user.ID, tokens, user.GiftTokens)
+	}
 }
 
 func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
