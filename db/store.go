@@ -114,30 +114,30 @@ func InitDB() Store {
 	loadEnvFile()
 
 	mongoURI := os.Getenv("MONGO_URI")
-	if mongoURI == "" {
-		mongoURI = "mongodb://huusaitokai_db_user:2QsDSYeRECGLGkBb@ac-kx1aq53-shard-00-00.e6uprgs.mongodb.net:27017,ac-kx1aq53-shard-00-01.e6uprgs.mongodb.net:27017,ac-kx1aq53-shard-00-02.e6uprgs.mongodb.net:27017/?ssl=true&replicaSet=atlas-es755c-shard-0&authSource=admin&appName=Cluster0"
-	}
+	if mongoURI != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	log.Printf("[DB] Attempting MongoDB Atlas connection...")
-	client, err := mongo.Connect(options.Client().ApplyURI(mongoURI))
-	if err == nil {
-		if pingErr := client.Ping(ctx, nil); pingErr == nil {
-			log.Println("[DB] ✅ Successfully connected to MongoDB Atlas Cloud Cluster!")
-			mStore := &MongoStore{
-				client:   client,
-				database: client.Database("nornai"),
+		log.Printf("[DB] Attempting MongoDB Atlas connection...")
+		client, err := mongo.Connect(options.Client().ApplyURI(mongoURI))
+		if err == nil {
+			if pingErr := client.Ping(ctx, nil); pingErr == nil {
+				log.Println("[DB] ✅ Successfully connected to MongoDB Atlas Cloud Cluster!")
+				mStore := &MongoStore{
+					client:   client,
+					database: client.Database("nornai"),
+				}
+				DB = mStore
+				SeedData(mStore)
+				return mStore
+			} else {
+				log.Printf("[DB] MongoDB Ping Warning: %v", pingErr)
 			}
-			DB = mStore
-			SeedData(mStore)
-			return mStore
 		} else {
-			log.Printf("[DB] MongoDB Ping Warning: %v", pingErr)
+			log.Printf("[DB] MongoDB Connect Error: %v", err)
 		}
 	} else {
-		log.Printf("[DB] MongoDB Connect Error: %v", err)
+		log.Println("[DB] ℹ️ No MONGO_URI provided in environment.")
 	}
 
 	log.Println("[DB] MongoDB not reachable. Using built-in high-performance MemoryStore (zero setup required).")
