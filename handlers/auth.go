@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -90,19 +89,6 @@ func OAuthHandler(w http.ResponseWriter, r *http.Request) {
 			UpdatedAt:          time.Now(),
 		}
 		_ = db.DB.CreateUser(r.Context(), newUser)
-
-		apiKey := &models.ApiKey{
-			ID:          "key-" + uuid.New().String()[:8],
-			UserID:      userID,
-			Key:         "lemas_sk_live_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:24],
-			Name:        fmt.Sprintf("%s Live Key", strings.ToUpper(req.Provider)),
-			SpendLimit:  50.0,
-			SpendUsed:   0.0,
-			Status:      "active",
-			Permissions: []string{"chat:completions", "messages", "embeddings"},
-			CreatedAt:   time.Now(),
-		}
-		_ = db.DB.CreateApiKey(r.Context(), apiKey)
 		user = newUser
 	} else {
 		if user.LastTokenResetDate != today {
@@ -176,20 +162,6 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
-
-	// Create initial unique API Key for user
-	apiKey := &models.ApiKey{
-		ID:          "key-" + uuid.New().String(),
-		UserID:      userID,
-		Key:         "lemas_sk_live_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:24],
-		Name:        "Live Production Key",
-		SpendLimit:  50.0,
-		SpendUsed:   0.0,
-		Status:      "active",
-		Permissions: []string{"chat:completions", "messages", "embeddings"},
-		CreatedAt:   time.Now(),
-	}
-	_ = db.DB.CreateApiKey(r.Context(), apiKey)
 
 	token, err := GenerateJWT(user.ID, user.Email)
 	if err != nil {

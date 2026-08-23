@@ -13,6 +13,7 @@ import (
 	"xkiro-backend/models"
 	"xkiro-backend/services"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
 
@@ -29,12 +30,34 @@ func validateApiKey(r *http.Request) (*models.ApiKey, error) {
 		return nil, fmt.Errorf("missing API key in Authorization header or x-api-key")
 	}
 
+	// 1. Try resolving API Key from DB
 	apiKey, err := db.DB.GetApiKeyByValue(r.Context(), apiKeyStr)
-	if err != nil {
-		return nil, fmt.Errorf("invalid or revoked API key: %s", apiKeyStr)
+	if err == nil && apiKey != nil && apiKey.Status == "active" {
+		return apiKey, nil
 	}
 
-	return apiKey, nil
+	// 2. Try validating as user logged-in JWT session
+	token, jwtErr := jwt.Parse(apiKeyStr, func(t *jwt.Token) (interface{}, error) {
+		return getJwtSecret(), nil
+	})
+	if jwtErr == nil && token.Valid {
+		if claims, ok := token.Claims.(jwt.MapClaims); ok {
+			if userID, ok := claims["user_id"].(string); ok && userID != "" {
+				return &models.ApiKey{
+					ID:          "jwt-session-" + userID,
+					UserID:      userID,
+					Key:         apiKeyStr,
+					Name:        "Web Session Auth",
+					SpendLimit:  1000.0,
+					Status:      "active",
+					Permissions: []string{"chat:completions", "messages"},
+					CreatedAt:   time.Now(),
+				}, nil
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("invalid or revoked API key: %s", apiKeyStr)
 }
 
 // checkAndVerifyUserDailyTokenLimit enforces the 1000 tokens/day limit per user
