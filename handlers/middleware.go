@@ -38,6 +38,12 @@ func EnableCORS(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Type, Authorization")
 		w.Header().Set("Access-Control-Max-Age", "86400")
 
+		// Global Security Hardening Headers (LEMAS-09 / LEMAS-10 / LEMAS-17)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		w.Header().Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload")
+
 		// Handle preflight OPTIONS requests immediately
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
