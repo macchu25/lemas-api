@@ -48,6 +48,7 @@ func main() {
 	mux.HandleFunc("/api/rotator/stats", handlers.RotatorStatsHandler)
 
 	// Admin Portal Endpoints
+	mux.HandleFunc("/api/admin/login", handlers.AdminLoginHandler)
 	mux.HandleFunc("/api/admin/overview", handlers.AdminOverviewHandler)
 	mux.HandleFunc("/api/admin/users", handlers.AdminUsersHandler)
 	mux.HandleFunc("/api/admin/users/adjust", handlers.AdminAdjustUserHandler)

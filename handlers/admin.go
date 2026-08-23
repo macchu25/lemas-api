@@ -175,3 +175,42 @@ func AdminAdjustUserHandler(w http.ResponseWriter, r *http.Request) {
 		"plan":        user.Plan,
 	})
 }
+
+type AdminLoginRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+// POST /api/admin/login
+func AdminLoginHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req AdminLoginRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Verify Admin Credentials: admin.lemas / mactieulem
+	if (req.Username == "admin.lemas" || req.Username == "admin@lemas.ai") && req.Password == "mactieulem" {
+		token, _ := GenerateJWT("admin-root-001", "admin.lemas@lemas.ai")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"token":   token,
+			"role":    "admin",
+			"message": "Welcome Master Admin",
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": false,
+		"error":   "Tài khoản hoặc mật khẩu quản trị không chính xác",
+	})
+}
