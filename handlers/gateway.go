@@ -81,17 +81,24 @@ func checkAndVerifyUserDailyTokenLimit(ctx context.Context, userID string) (*mod
 	}
 
 	if user.DailyTokensUsed >= limit {
-		// Daily quota exhausted; check if user has permanent GiftTokens
-		if user.GiftTokens <= 0 {
-			return user, fmt.Errorf("Bạn đã sử dụng hết hạn mức %d tokens trong ngày hôm nay (Đã dùng: %d/%d tokens). Bạn có thể nhập mã Giftcode hoặc đợi reset vào 00:00 ngày mai!", limit, user.DailyTokensUsed, limit)
+		// 1. Check if user has permanent GiftTokens
+		if user.GiftTokens > 0 {
+			log.Printf("[Quota] 🎁 User `%s` daily tokens exhausted (%d/%d), using GiftTokens balance (%d tokens available)", user.ID, user.DailyTokensUsed, limit, user.GiftTokens)
+			return user, nil
 		}
-		log.Printf("[Quota] 🎁 User `%s` daily tokens exhausted (%d/%d), using GiftTokens balance (%d tokens available)", user.ID, user.DailyTokensUsed, limit, user.GiftTokens)
+		// 2. Check if user has deposited USD Balance
+		if user.Balance > 0 {
+			log.Printf("[Quota] 💳 User `%s` daily tokens exhausted (%d/%d), using USD balance ($%.2f)", user.ID, user.DailyTokensUsed, limit, user.Balance)
+			return user, nil
+		}
+		// 3. Quota fully exhausted -> Prompt to upgrade package or deposit
+		return user, fmt.Errorf("Bạn đã sử dụng hết hạn mức %d tokens miễn phí trong ngày hôm nay. Hãy nâng cấp gói cước hoặc nạp tiền tại mục Nạp Tiền để tiếp tục trò chuyện!", limit)
 	}
 
 	return user, nil
 }
 
-func recordUserDailyTokenConsumption(ctx context.Context, user *models.User, tokens int) {
+func recordUserDailyTokenConsumption(ctx context.Context, user *models.User, tokens int, costUSD float64) {
 	if user == nil || tokens <= 0 {
 		return
 	}
@@ -103,6 +110,9 @@ func recordUserDailyTokenConsumption(ctx context.Context, user *models.User, tok
 
 	if user.DailyTokensUsed < limit {
 		user.DailyTokensUsed += int64(tokens)
+		if user.DailyTokensUsed > limit {
+			user.DailyTokensUsed = limit
+		}
 		user.UpdatedAt = time.Now()
 		_ = db.DB.UpdateUser(ctx, user)
 		log.Printf("[Quota] 📊 User `%s` consumed %d daily tokens (%d/%d used today)", user.ID, tokens, user.DailyTokensUsed, limit)
@@ -113,6 +123,14 @@ func recordUserDailyTokenConsumption(ctx context.Context, user *models.User, tok
 			user.GiftTokens = 0
 		}
 		log.Printf("[Quota] 🎁 User `%s` consumed %d permanent GiftTokens (Remaining Gift: %d tokens)", user.ID, tokens, user.GiftTokens)
+	} else if user.Balance > 0 {
+		user.Balance -= costUSD
+		if user.Balance < 0 {
+			user.Balance = 0
+		}
+		user.UpdatedAt = time.Now()
+		_ = db.DB.UpdateUser(ctx, user)
+		log.Printf("[Quota] 💳 User `%s` balance deducted $%.6f (Remaining: $%.2f)", user.ID, costUSD, user.Balance)
 	}
 }
 
@@ -189,10 +207,10 @@ func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		costUSD := float64(totalTokens) * 0.00000014 // Norn.AI optimized price
+		costUSD := float64(totalTokens) * 0.00000014 // Lemas.AI optimized price
 
 		// Record daily user token quota consumption
-		recordUserDailyTokenConsumption(r.Context(), user, totalTokens)
+		recordUserDailyTokenConsumption(r.Context(), user, totalTokens, costUSD)
 
 		// Update key usage in MongoDB Atlas
 		_ = db.DB.UpdateApiKeyUsage(r.Context(), apiKey.ID, costUSD)
@@ -220,9 +238,10 @@ func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 	promptTokens := 15
 	compTokens := 45
 	totalTokens := 60
+	costUSD := float64(totalTokens) * 0.00000014
 
 	// Record daily user token quota consumption on fallback as well
-	recordUserDailyTokenConsumption(r.Context(), user, totalTokens)
+	recordUserDailyTokenConsumption(r.Context(), user, totalTokens, costUSD)
 
 	var responseContent string
 	lastMsg := ""
@@ -313,9 +332,8 @@ func MessagesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tokensConsumed := 66
-	recordUserDailyTokenConsumption(r.Context(), user, tokensConsumed)
-
 	costUSD := 0.00005
+	recordUserDailyTokenConsumption(r.Context(), user, tokensConsumed, costUSD)
 	_ = db.DB.UpdateApiKeyUsage(r.Context(), apiKey.ID, costUSD)
 
 	resp := map[string]interface{}{
