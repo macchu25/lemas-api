@@ -37,14 +37,14 @@ func validateApiKey(r *http.Request) (*models.ApiKey, error) {
 	}
 
 	// 2. Try validating as user logged-in JWT session
-	token, jwtErr := parseJwtWithFallbacks(apiKeyStr)
+	token, jwtErr := parseJwtToken(apiKeyStr)
 	if jwtErr == nil && token != nil && token.Valid {
 		if claims, ok := token.Claims.(jwt.MapClaims); ok {
 			if userID, ok := claims["user_id"].(string); ok && userID != "" {
 				return &models.ApiKey{
 					ID:          "jwt-session-" + userID,
 					UserID:      userID,
-					Key:         apiKeyStr,
+					Key:         "jwt-bearer-auth",
 					Name:        "Web Session Auth",
 					SpendLimit:  1000.0,
 					Status:      "active",
@@ -55,7 +55,8 @@ func validateApiKey(r *http.Request) (*models.ApiKey, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("invalid or revoked API key: %s", apiKeyStr)
+	// Redact key in error message to prevent accidental key exposure in observability/logs (LEMAS-MED-01)
+	return nil, fmt.Errorf("invalid or revoked API key")
 }
 
 // checkAndVerifyUserDailyTokenLimit enforces the 1000 tokens/day limit per user
@@ -108,29 +109,27 @@ func recordUserDailyTokenConsumption(ctx context.Context, user *models.User, tok
 		limit = 1000
 	}
 
-	if user.DailyTokensUsed < limit {
-		user.DailyTokensUsed += int64(tokens)
-		if user.DailyTokensUsed > limit {
-			user.DailyTokensUsed = limit
+	// 1. Try atomic daily token consumption (prevents race conditions LEMAS-HIGH-01)
+	err := db.DB.DeductDailyTokensAtomic(ctx, user.ID, int64(tokens), limit)
+	if err == nil {
+		log.Printf("[Quota] 📊 User `%s` consumed %d daily tokens", user.ID, tokens)
+		return
+	}
+
+	// 2. Try atomic GiftTokens consumption
+	err = db.DB.ConsumeUserGiftTokens(ctx, user.ID, int64(tokens))
+	if err == nil {
+		log.Printf("[Quota] 🎁 User `%s` consumed %d permanent GiftTokens", user.ID, tokens)
+		return
+	}
+
+	// 3. Try atomic USD Balance deduction
+	if costUSD > 0 {
+		err = db.DB.DeductUserBalanceAtomic(ctx, user.ID, costUSD)
+		if err == nil {
+			log.Printf("[Quota] 💳 User `%s` balance deducted $%.6f", user.ID, costUSD)
+			return
 		}
-		user.UpdatedAt = time.Now()
-		_ = db.DB.UpdateUser(ctx, user)
-		log.Printf("[Quota] 📊 User `%s` consumed %d daily tokens (%d/%d used today)", user.ID, tokens, user.DailyTokensUsed, limit)
-	} else if user.GiftTokens > 0 {
-		_ = db.DB.ConsumeUserGiftTokens(ctx, user.ID, int64(tokens))
-		user.GiftTokens -= int64(tokens)
-		if user.GiftTokens < 0 {
-			user.GiftTokens = 0
-		}
-		log.Printf("[Quota] 🎁 User `%s` consumed %d permanent GiftTokens (Remaining Gift: %d tokens)", user.ID, tokens, user.GiftTokens)
-	} else if user.Balance > 0 {
-		user.Balance -= costUSD
-		if user.Balance < 0 {
-			user.Balance = 0
-		}
-		user.UpdatedAt = time.Now()
-		_ = db.DB.UpdateUser(ctx, user)
-		log.Printf("[Quota] 💳 User `%s` balance deducted $%.6f (Remaining: $%.2f)", user.ID, costUSD, user.Balance)
 	}
 }
 

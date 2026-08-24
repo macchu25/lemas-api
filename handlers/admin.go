@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -230,24 +231,30 @@ func AdminLoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Strict Security Enforcement (LEMAS-CRIT-02):
+	// No hardcoded credentials. ADMIN_USERNAME and ADMIN_PASSWORD MUST be set in environment variables.
 	expectedUser := os.Getenv("ADMIN_USERNAME")
-	if expectedUser == "" {
-		expectedUser = "admin.lemas"
-	}
 	expectedPass := os.Getenv("ADMIN_PASSWORD")
-	if expectedPass == "" {
-		expectedPass = "mactieulem"
+
+	if expectedUser == "" || expectedPass == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "Cổng quản trị chưa được cấu hình biến môi trường ADMIN_USERNAME hoặc ADMIN_PASSWORD trên máy chủ.",
+		})
+		return
 	}
 
 	inputUser := strings.TrimSpace(req.Username)
 	inputPass := req.Password
 
-	// Constant-time check to prevent timing attacks
-	validUser := (inputUser == expectedUser || inputUser == "admin@lemas.ai")
-	validPass := (inputPass == expectedPass)
+	// Constant-time check to prevent timing side-channel attacks
+	userMatch := subtle.ConstantTimeCompare([]byte(inputUser), []byte(expectedUser)) == 1
+	passMatch := subtle.ConstantTimeCompare([]byte(inputPass), []byte(expectedPass)) == 1
 
-	if validUser && validPass {
-		token, err := GenerateAdminJWT("admin-root-001", "admin@lemas.ai")
+	if userMatch && passMatch {
+		token, err := GenerateAdminJWT("admin-root-001", expectedUser)
 		if err != nil {
 			http.Error(w, `{"error":"failed to generate admin token"}`, http.StatusInternalServerError)
 			return

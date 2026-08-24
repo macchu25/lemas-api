@@ -36,16 +36,17 @@ type Giftcode struct {
 }
 
 type ApiKey struct {
-	ID          string    `json:"id" bson:"_id,omitempty"`
-	UserID      string    `json:"user_id" bson:"user_id"`
-	Key         string    `json:"key" bson:"key"` // format: "xk-live-..."
-	Name        string    `json:"name" bson:"name"`
-	SpendLimit  float64   `json:"spend_limit" bson:"spend_limit"`
-	SpendUsed   float64   `json:"spend_used" bson:"spend_used"`
-	Status      string    `json:"status" bson:"status"` // "active", "revoked"
-	Permissions []string  `json:"permissions" bson:"permissions"`
+	ID          string     `json:"id" bson:"_id,omitempty"`
+	UserID      string     `json:"user_id" bson:"user_id"`
+	Key         string     `json:"key" bson:"key"` // Masked format in storage: "xk-live-••••••••1234"
+	KeyHash     string     `json:"-" bson:"key_hash"` // SHA-256 hash of raw key
+	Name        string     `json:"name" bson:"name"`
+	SpendLimit  float64    `json:"spend_limit" bson:"spend_limit"`
+	SpendUsed   float64    `json:"spend_used" bson:"spend_used"`
+	Status      string     `json:"status" bson:"status"` // "active", "revoked"
+	Permissions []string   `json:"permissions" bson:"permissions"`
 	LastUsedAt  *time.Time `json:"last_used_at,omitempty" bson:"last_used_at,omitempty"`
-	CreatedAt   time.Time `json:"created_at" bson:"created_at"`
+	CreatedAt   time.Time  `json:"created_at" bson:"created_at"`
 }
 
 type ModelItem struct {

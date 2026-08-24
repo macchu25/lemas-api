@@ -2,10 +2,14 @@ package handlers
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"log"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -83,33 +87,38 @@ func EnableCORS(next http.Handler) http.Handler {
 	})
 }
 
+var (
+	dynamicJwtSecretOnce sync.Once
+	dynamicJwtSecret     []byte
+)
+
 func getJwtSecret() []byte {
-	secret := os.Getenv("JWT_SECRET")
-	if secret == "" {
-		secret = "lemas_prod_jwt_secret_9981a5e78b244cc99210"
+	// Strict Security Enforcement (LEMAS-CRIT-03):
+	// Read from environment variable JWT_SECRET.
+	// If missing, generate an ephemeral 64-byte CSPRNG random secret in RAM.
+	// NEVER hardcode fallback secrets in repository.
+	if secret := os.Getenv("JWT_SECRET"); secret != "" {
+		return []byte(secret)
 	}
-	return []byte(secret)
+
+	dynamicJwtSecretOnce.Do(func() {
+		buf := make([]byte, 64)
+		if _, err := rand.Read(buf); err != nil {
+			log.Fatalf("[Security Fatal] Failed to generate secure CSPRNG JWT secret: %v", err)
+		}
+		dynamicJwtSecret = []byte(hex.EncodeToString(buf))
+		log.Println("[Security Warning] ⚠️ JWT_SECRET environment variable is not set. Generated ephemeral CSPRNG secret in memory.")
+	})
+	return dynamicJwtSecret
 }
 
 func parseJwtToken(tokenStr string) (*jwt.Token, error) {
-	token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
+	return jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
 		// Strict algorithm check to prevent algorithm confusion attacks (e.g. none attack)
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, jwt.ErrSignatureInvalid
 		}
 		return getJwtSecret(), nil
-	})
-	if err == nil && token.Valid {
-		return token, nil
-	}
-
-	// Fallback secret check for backwards-compatible active sessions during transition
-	fallbackSecret := []byte("lemas-secret-key-super-secure-token-2026")
-	return jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, jwt.ErrSignatureInvalid
-		}
-		return fallbackSecret, nil
 	})
 }
 

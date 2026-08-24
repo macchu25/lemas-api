@@ -12,6 +12,14 @@ import (
 )
 
 func main() {
+	// Startup Security Configuration Checks
+	if os.Getenv("JWT_SECRET") == "" {
+		log.Println("[Security Notice] ⚠️ JWT_SECRET environment variable is not configured. An ephemeral CSPRNG secret is active in RAM.")
+	}
+	if os.Getenv("ADMIN_USERNAME") == "" || os.Getenv("ADMIN_PASSWORD") == "" {
+		log.Println("[Security Notice] ⚠️ ADMIN_USERNAME or ADMIN_PASSWORD environment variable is not configured. Admin portal login is locked until configured.")
+	}
+
 	// Initialize Database (MongoDB + auto-fallback)
 	db.InitDB()
 

@@ -55,42 +55,107 @@ func OAuthHandler(w http.ResponseWriter, r *http.Request) {
 		req.Provider = "google"
 	}
 
-	email := strings.ToLower(strings.TrimSpace(req.Email))
-	name := strings.TrimSpace(req.Name)
-
-	// If Google Credential / ID Token is provided, verify it directly with Google TokenInfo
+	// Strict Security Enforcement (LEMAS-CRIT-01):
+	// Never accept client-supplied req.Email as verified identity.
+	// We MUST receive a cryptographically valid Google Token (ID Token or Access Token)
+	// and extract email & name exclusively from Google's verified endpoints.
 	tokenToVerify := req.Credential
 	if tokenToVerify == "" {
 		tokenToVerify = req.Token
 	}
 
-	if req.Provider == "google" && tokenToVerify != "" {
-		client := &http.Client{Timeout: 5 * time.Second}
-		resp, err := client.Get("https://oauth2.googleapis.com/tokeninfo?id_token=" + tokenToVerify)
-		if err == nil && resp.StatusCode == http.StatusOK {
-			defer resp.Body.Close()
-			var googleClaims struct {
-				Email         string `json:"email"`
-				EmailVerified string `json:"email_verified"`
-				Name          string `json:"name"`
+	if tokenToVerify == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "Yêu cầu mã xác thực OAuth hợp lệ (Google ID Token hoặc Access Token). Không thể đăng nhập mà không có token chứng minh sở hữu.",
+		})
+		return
+	}
+
+	var verifiedEmail string
+	var verifiedName string
+	var verifiedAvatar string
+
+	client := &http.Client{Timeout: 7 * time.Second}
+
+	// 1. Try Google ID Token verification via tokeninfo
+	idTokenURL := "https://oauth2.googleapis.com/tokeninfo?id_token=" + tokenToVerify
+	resp, err := client.Get(idTokenURL)
+	if err == nil && resp.StatusCode == http.StatusOK {
+		defer resp.Body.Close()
+		var googleIDClaims struct {
+			Email         string      `json:"email"`
+			EmailVerified interface{} `json:"email_verified"` // string "true" or bool true
+			Name          string      `json:"name"`
+			Picture       string      `json:"picture"`
+		}
+		if decodeErr := json.NewDecoder(resp.Body).Decode(&googleIDClaims); decodeErr == nil && googleIDClaims.Email != "" {
+			// Check email_verified
+			isVerified := false
+			switch v := googleIDClaims.EmailVerified.(type) {
+			case string:
+				isVerified = strings.ToLower(v) == "true"
+			case bool:
+				isVerified = v
 			}
-			if err := json.NewDecoder(resp.Body).Decode(&googleClaims); err == nil && googleClaims.Email != "" {
-				email = strings.ToLower(strings.TrimSpace(googleClaims.Email))
-				if googleClaims.Name != "" {
-					name = googleClaims.Name
+
+			if isVerified {
+				verifiedEmail = strings.ToLower(strings.TrimSpace(googleIDClaims.Email))
+				verifiedName = strings.TrimSpace(googleIDClaims.Name)
+				verifiedAvatar = googleIDClaims.Picture
+			}
+		}
+	}
+
+	// 2. If ID Token check didn't succeed, try Google OAuth2 UserInfo via access_token
+	if verifiedEmail == "" {
+		userinfoReq, reqErr := http.NewRequestWithContext(r.Context(), http.MethodGet, "https://www.googleapis.com/oauth2/v3/userinfo", nil)
+		if reqErr == nil {
+			userinfoReq.Header.Set("Authorization", "Bearer "+tokenToVerify)
+			uResp, uErr := client.Do(userinfoReq)
+			if uErr == nil && uResp.StatusCode == http.StatusOK {
+				defer uResp.Body.Close()
+				var googleUserClaims struct {
+					Email         string      `json:"email"`
+					EmailVerified interface{} `json:"email_verified"`
+					Name          string      `json:"name"`
+					Picture       string      `json:"picture"`
+				}
+				if decodeErr := json.NewDecoder(uResp.Body).Decode(&googleUserClaims); decodeErr == nil && googleUserClaims.Email != "" {
+					isVerified := false
+					switch v := googleUserClaims.EmailVerified.(type) {
+					case string:
+						isVerified = strings.ToLower(v) == "true"
+					case bool:
+						isVerified = v
+					}
+					if isVerified {
+						verifiedEmail = strings.ToLower(strings.TrimSpace(googleUserClaims.Email))
+						verifiedName = strings.TrimSpace(googleUserClaims.Name)
+						verifiedAvatar = googleUserClaims.Picture
+					}
 				}
 			}
 		}
 	}
 
-	if email == "" {
-		http.Error(w, `{"error":"Email xác thực OAuth không hợp lệ"}`, http.StatusBadRequest)
+	// If Google token verification failed or email is not verified, REJECT request
+	if verifiedEmail == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "Mã xác thực Google OAuth không hợp lệ hoặc email chưa được Google xác minh.",
+		})
 		return
 	}
 
+	email := verifiedEmail
+	name := verifiedName
 	if name == "" {
-		name = "Lemas Developer"
+		name = email
 	}
+	_ = verifiedAvatar
 
 	today := time.Now().Format("2006-01-02")
 	user, err := db.DB.GetUserByEmail(r.Context(), email)

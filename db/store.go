@@ -2,6 +2,8 @@ package db
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"os"
@@ -16,6 +18,12 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
+// HashApiKey generates a deterministic SHA-256 hex string for secure key indexing & storage
+func HashApiKey(rawKey string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(rawKey)))
+	return hex.EncodeToString(sum[:])
+}
+
 type Store interface {
 	// Users
 	CreateUser(ctx context.Context, u *models.User) error
@@ -23,6 +31,8 @@ type Store interface {
 	GetUserByID(ctx context.Context, id string) (*models.User, error)
 	UpdateUser(ctx context.Context, u *models.User) error
 	UpdateUserBalance(ctx context.Context, id string, balance float64, tokens int64) error
+	DeductDailyTokensAtomic(ctx context.Context, userID string, tokens int64, limit int64) error
+	DeductUserBalanceAtomic(ctx context.Context, userID string, costUSD float64) error
 
 	// ApiKeys
 	CreateApiKey(ctx context.Context, k *models.ApiKey) error
@@ -219,9 +229,42 @@ func (m *MemoryStore) UpdateUserBalance(ctx context.Context, id string, balance 
 	return fmt.Errorf("user not found")
 }
 
+func (m *MemoryStore) DeductDailyTokensAtomic(ctx context.Context, userID string, tokens int64, limit int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	u, ok := m.users[userID]
+	if !ok {
+		return fmt.Errorf("user not found")
+	}
+	if u.DailyTokensUsed >= limit {
+		return fmt.Errorf("daily token limit exceeded")
+	}
+	u.DailyTokensUsed += tokens
+	u.UpdatedAt = time.Now()
+	return nil
+}
+
+func (m *MemoryStore) DeductUserBalanceAtomic(ctx context.Context, userID string, costUSD float64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	u, ok := m.users[userID]
+	if !ok {
+		return fmt.Errorf("user not found")
+	}
+	if u.Balance < costUSD {
+		return fmt.Errorf("insufficient balance")
+	}
+	u.Balance -= costUSD
+	u.UpdatedAt = time.Now()
+	return nil
+}
+
 func (m *MemoryStore) CreateApiKey(ctx context.Context, k *models.ApiKey) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if k.KeyHash == "" && k.Key != "" {
+		k.KeyHash = HashApiKey(k.Key)
+	}
 	m.apiKeys[k.ID] = k
 	return nil
 }
@@ -241,8 +284,9 @@ func (m *MemoryStore) GetApiKeysByUser(ctx context.Context, userID string) ([]mo
 func (m *MemoryStore) GetApiKeyByValue(ctx context.Context, key string) (*models.ApiKey, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	keyHash := HashApiKey(key)
 	for _, k := range m.apiKeys {
-		if k.Key == key && k.Status == "active" {
+		if (k.KeyHash == keyHash || k.Key == key) && k.Status == "active" {
 			copy := *k
 			return &copy, nil
 		}
@@ -550,8 +594,51 @@ func (ms *MongoStore) UpdateUserBalance(ctx context.Context, id string, balance 
 	return err
 }
 
+func (ms *MongoStore) DeductDailyTokensAtomic(ctx context.Context, userID string, tokens int64, limit int64) error {
+	coll := ms.database.Collection("users")
+	res, err := coll.UpdateOne(ctx, bson.M{
+		"_id":               userID,
+		"daily_tokens_used": bson.M{"$lt": limit},
+	}, bson.M{
+		"$inc": bson.M{"daily_tokens_used": tokens},
+		"$set": bson.M{"updated_at": time.Now()},
+	})
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return fmt.Errorf("daily token limit exceeded")
+	}
+	return nil
+}
+
+func (ms *MongoStore) DeductUserBalanceAtomic(ctx context.Context, userID string, costUSD float64) error {
+	coll := ms.database.Collection("users")
+	res, err := coll.UpdateOne(ctx, bson.M{
+		"_id":     userID,
+		"balance": bson.M{"$gte": costUSD},
+	}, bson.M{
+		"$inc": bson.M{"balance": -costUSD},
+		"$set": bson.M{"updated_at": time.Now()},
+	})
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return fmt.Errorf("insufficient balance")
+	}
+	return nil
+}
+
 func (ms *MongoStore) CreateApiKey(ctx context.Context, k *models.ApiKey) error {
 	coll := ms.database.Collection("api_keys")
+	if k.KeyHash == "" && k.Key != "" {
+		k.KeyHash = HashApiKey(k.Key)
+	}
+	// Mask key before saving to DB
+	if len(k.Key) > 12 {
+		k.Key = k.Key[:8] + "••••••••" + k.Key[len(k.Key)-4:]
+	}
 	_, err := coll.InsertOne(ctx, k)
 	return err
 }
@@ -572,8 +659,15 @@ func (ms *MongoStore) GetApiKeysByUser(ctx context.Context, userID string) ([]mo
 
 func (ms *MongoStore) GetApiKeyByValue(ctx context.Context, key string) (*models.ApiKey, error) {
 	coll := ms.database.Collection("api_keys")
+	keyHash := HashApiKey(key)
 	var k models.ApiKey
-	err := coll.FindOne(ctx, bson.M{"key": key, "status": "active"}).Decode(&k)
+	err := coll.FindOne(ctx, bson.M{
+		"$or": []bson.M{
+			{"key_hash": keyHash},
+			{"key": key}, // legacy support during migration
+		},
+		"status": "active",
+	}).Decode(&k)
 	if err != nil {
 		return nil, err
 	}
@@ -870,9 +964,18 @@ func (ms *MongoStore) AddUserGiftTokens(ctx context.Context, userID string, toke
 
 func (ms *MongoStore) ConsumeUserGiftTokens(ctx context.Context, userID string, tokens int64) error {
 	coll := ms.database.Collection("users")
-	_, err := coll.UpdateOne(ctx, bson.M{"_id": userID}, bson.M{
+	res, err := coll.UpdateOne(ctx, bson.M{
+		"_id":         userID,
+		"gift_tokens": bson.M{"$gte": tokens},
+	}, bson.M{
 		"$inc": bson.M{"gift_tokens": -tokens},
 		"$set": bson.M{"updated_at": time.Now()},
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return fmt.Errorf("insufficient gift tokens")
+	}
+	return nil
 }
