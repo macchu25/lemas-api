@@ -68,8 +68,6 @@ func main() {
 	mux.HandleFunc("/api/user/giftcode/redeem", handlers.AuthMiddleware(handlers.RedeemGiftcodeHandler))
 	mux.HandleFunc("/api/user/image/quota", handlers.AuthMiddleware(handlers.ImageQuotaHandler))
 	mux.HandleFunc("/api/user/image/consume", handlers.AuthMiddleware(handlers.ImageConsumeHandler))
-	mux.HandleFunc("/api/user/art-qr/jobs", handlers.AuthMiddleware(handlers.ArtQRCreateHandler))
-	mux.HandleFunc("/api/user/art-qr/status", handlers.AuthMiddleware(handlers.ArtQRStatusHandler))
 
 	port := os.Getenv("PORT")
 	if port == "" {
