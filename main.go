@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -68,6 +69,17 @@ func main() {
 	mux.HandleFunc("/api/user/giftcode/redeem", handlers.AuthMiddleware(handlers.RedeemGiftcodeHandler))
 	mux.HandleFunc("/api/user/image/quota", handlers.AuthMiddleware(handlers.ImageQuotaHandler))
 	mux.HandleFunc("/api/user/image/consume", handlers.AuthMiddleware(handlers.ImageConsumeHandler))
+
+	// Legacy Art QR handler (Graceful JSON response for cached browser clients)
+	legacyArtQRHandler := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":  "client_generated",
+			"message": "Art QR generation is processed via local Canvas & Puter/FLUX client",
+		})
+	}
+	mux.HandleFunc("/user/art-qr/jobs", legacyArtQRHandler)
+	mux.HandleFunc("/api/user/art-qr/jobs", legacyArtQRHandler)
 
 	port := os.Getenv("PORT")
 	if port == "" {
