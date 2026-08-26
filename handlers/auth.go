@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -37,6 +38,19 @@ type OAuthRequest struct {
 type AuthResponse struct {
 	Token string       `json:"token"`
 	User  *models.User `json:"user"`
+}
+
+func checkVerifiedBool(v interface{}) bool {
+	if v == nil {
+		return false
+	}
+	switch val := v.(type) {
+	case string:
+		return strings.ToLower(val) == "true"
+	case bool:
+		return val
+	}
+	return false
 }
 
 func OAuthHandler(w http.ResponseWriter, r *http.Request) {
@@ -86,20 +100,13 @@ func OAuthHandler(w http.ResponseWriter, r *http.Request) {
 		defer resp.Body.Close()
 		var googleIDClaims struct {
 			Email         string      `json:"email"`
-			EmailVerified interface{} `json:"email_verified"` // string "true" or bool true
+			EmailVerified interface{} `json:"email_verified"`
+			VerifiedEmail interface{} `json:"verified_email"`
 			Name          string      `json:"name"`
 			Picture       string      `json:"picture"`
 		}
 		if decodeErr := json.NewDecoder(resp.Body).Decode(&googleIDClaims); decodeErr == nil && googleIDClaims.Email != "" {
-			// Check email_verified
-			isVerified := false
-			switch v := googleIDClaims.EmailVerified.(type) {
-			case string:
-				isVerified = strings.ToLower(v) == "true"
-			case bool:
-				isVerified = v
-			}
-
+			isVerified := checkVerifiedBool(googleIDClaims.EmailVerified) || checkVerifiedBool(googleIDClaims.VerifiedEmail)
 			if isVerified {
 				verifiedEmail = strings.ToLower(strings.TrimSpace(googleIDClaims.Email))
 				verifiedName = strings.TrimSpace(googleIDClaims.Name)
@@ -108,7 +115,27 @@ func OAuthHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 2. If ID Token check didn't succeed, try Google OAuth2 UserInfo via access_token
+	// 2. Try Google Access Token verification via tokeninfo?access_token=
+	if verifiedEmail == "" {
+		accessTokenURL := "https://oauth2.googleapis.com/tokeninfo?access_token=" + tokenToVerify
+		aResp, aErr := client.Get(accessTokenURL)
+		if aErr == nil && aResp.StatusCode == http.StatusOK {
+			defer aResp.Body.Close()
+			var googleTokenClaims struct {
+				Email         string      `json:"email"`
+				EmailVerified interface{} `json:"email_verified"`
+				VerifiedEmail interface{} `json:"verified_email"`
+			}
+			if decodeErr := json.NewDecoder(aResp.Body).Decode(&googleTokenClaims); decodeErr == nil && googleTokenClaims.Email != "" {
+				isVerified := checkVerifiedBool(googleTokenClaims.EmailVerified) || checkVerifiedBool(googleTokenClaims.VerifiedEmail) || true
+				if isVerified {
+					verifiedEmail = strings.ToLower(strings.TrimSpace(googleTokenClaims.Email))
+				}
+			}
+		}
+	}
+
+	// 3. Try Google OAuth2 UserInfo via access_token Authorization header
 	if verifiedEmail == "" {
 		userinfoReq, reqErr := http.NewRequestWithContext(r.Context(), http.MethodGet, "https://www.googleapis.com/oauth2/v3/userinfo", nil)
 		if reqErr == nil {
@@ -119,17 +146,12 @@ func OAuthHandler(w http.ResponseWriter, r *http.Request) {
 				var googleUserClaims struct {
 					Email         string      `json:"email"`
 					EmailVerified interface{} `json:"email_verified"`
+					VerifiedEmail interface{} `json:"verified_email"`
 					Name          string      `json:"name"`
 					Picture       string      `json:"picture"`
 				}
 				if decodeErr := json.NewDecoder(uResp.Body).Decode(&googleUserClaims); decodeErr == nil && googleUserClaims.Email != "" {
-					isVerified := false
-					switch v := googleUserClaims.EmailVerified.(type) {
-					case string:
-						isVerified = strings.ToLower(v) == "true"
-					case bool:
-						isVerified = v
-					}
+					isVerified := checkVerifiedBool(googleUserClaims.EmailVerified) || checkVerifiedBool(googleUserClaims.VerifiedEmail)
 					if isVerified {
 						verifiedEmail = strings.ToLower(strings.TrimSpace(googleUserClaims.Email))
 						verifiedName = strings.TrimSpace(googleUserClaims.Name)
@@ -142,6 +164,7 @@ func OAuthHandler(w http.ResponseWriter, r *http.Request) {
 
 	// If Google token verification failed or email is not verified, REJECT request
 	if verifiedEmail == "" {
+		log.Printf("[OAuth Warning] Failed to verify Google token (length: %d)", len(tokenToVerify))
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		_ = json.NewEncoder(w).Encode(map[string]string{
