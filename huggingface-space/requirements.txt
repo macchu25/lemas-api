@@ -1,0 +1,8 @@
+gradio==5.49.1
+spaces>=0.42.0
+torch>=2.8.0
+diffusers>=0.35.1
+transformers>=4.56.0
+accelerate>=1.10.0
+safetensors>=0.6.2
+Pillow>=11.0.0
