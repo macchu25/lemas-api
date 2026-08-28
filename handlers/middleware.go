@@ -47,39 +47,25 @@ func isAllowedOrigin(origin string) bool {
 func EnableCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-
-		if origin != "" {
-			if isAllowedOrigin(origin) {
-				w.Header().Set("Access-Control-Allow-Origin", origin)
-				w.Header().Set("Access-Control-Allow-Credentials", "true")
-				w.Header().Set("Vary", "Origin")
-			} else {
-				// For public OpenAI/Anthropic API calls (/v1/...), allow uncredentialed access
-				if strings.HasPrefix(r.URL.Path, "/v1/") {
-					w.Header().Set("Access-Control-Allow-Origin", "*")
-				} else {
-					// Disallow untrusted origin on internal/admin API routes
-					if r.Method == http.MethodOptions {
-						w.WriteHeader(http.StatusForbidden)
-						return
-					}
-				}
-			}
+		if origin == "" {
+			origin = "*"
 		}
 
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, Origin, X-Requested-With, x-api-key, anthropic-version, User-Agent, Cache-Control")
 		w.Header().Set("Access-Control-Max-Age", "86400")
+		w.Header().Set("Vary", "Origin, Access-Control-Request-Method, Access-Control-Request-Headers")
 
-		// Global Security Hardening Headers (LEMAS-09 / LEMAS-10 / LEMAS-17)
+		// Global Security Hardening Headers
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
-		w.Header().Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload")
 
-		// Handle preflight OPTIONS requests immediately
+		// Handle preflight OPTIONS requests immediately with 200 OK
 		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
+			w.WriteHeader(http.StatusOK)
 			return
 		}
 
