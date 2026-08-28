@@ -34,9 +34,9 @@ type artQRPreset struct {
 }
 
 var artQRPresets = map[string]artQRPreset{
-	"starry-night": {"Van Gogh inspired starry night, cobalt and ultramarine sky, swirling golden stars, expressive oil impasto, QR modules integrated as windows stars and architecture, centered square composition, high contrast, museum quality", "text, letters, watermark, logo, frame, blurry, low contrast, cropped QR, deformed finder patterns", 1.35},
-	"cyberpunk":    {"cinematic cyberpunk city at night, QR modules integrated as neon windows and dense city blocks, electric cyan and magenta, wet reflective streets, centered square composition, high contrast, detailed digital art", "text, letters, watermark, logo, daylight, pastel, blurry, low contrast, cropped QR, deformed finder patterns", 1.4},
-	"watercolor":   {"delicate botanical watercolor, QR modules formed by dark emerald leaves petals and branches, indigo pigment on warm paper, visible watercolor blooms, centered square composition, high contrast", "text, letters, watermark, logo, photorealistic, blurry, low contrast, cropped QR, deformed finder patterns", 1.45},
+	"starry-night": {"Van Gogh inspired starry night, cobalt and ultramarine sky, swirling golden stars, expressive oil impasto, QR modules integrated as windows stars and architecture, centered square composition, high contrast, museum quality", "text, letters, watermark, logo, frame, blurry, low contrast, cropped QR, deformed finder patterns", 1.65},
+	"cyberpunk":    {"cinematic cyberpunk city at night, QR modules integrated as neon windows and dense city blocks, electric cyan and magenta, wet reflective streets, centered square composition, high contrast, detailed digital art", "text, letters, watermark, logo, daylight, pastel, blurry, low contrast, cropped QR, deformed finder patterns", 1.7},
+	"watercolor":   {"delicate botanical watercolor, QR modules formed by dark emerald leaves petals and branches, indigo pigment on warm paper, visible watercolor blooms, centered square composition, high contrast", "text, letters, watermark, logo, photorealistic, blurry, low contrast, cropped QR, deformed finder patterns", 1.75},
 }
 
 type artQRResult struct {
@@ -72,7 +72,10 @@ func decodeQRImage(img image.Image) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	result, err := qrcode.NewQRCodeReader().Decode(bitmap, nil)
+	hints := map[gozxing.DecodeHintType]interface{}{
+		gozxing.DecodeHintType_TRY_HARDER: true,
+	}
+	result, err := qrcode.NewQRCodeReader().Decode(bitmap, hints)
 	if err != nil {
 		return "", err
 	}

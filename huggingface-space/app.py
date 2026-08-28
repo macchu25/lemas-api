@@ -26,10 +26,13 @@ pipe.enable_attention_slicing()
 
 
 def prepare_qr(image: Image.Image) -> Image.Image:
-    image = ImageOps.exif_transpose(image).convert("RGB")
-    image = ImageOps.fit(image, (512, 512), method=Image.Resampling.NEAREST)
-    image = ImageEnhance.Contrast(image).enhance(1.25)
-    return image
+    image = ImageOps.exif_transpose(image).convert("L")
+    image = ImageOps.fit(image, (448, 448), method=Image.Resampling.NEAREST)
+    image = ImageEnhance.Contrast(image).enhance(1.5)
+    image = image.point(lambda value: 255 if value >= 150 else 0).convert("RGB")
+    canvas = Image.new("RGB", (512, 512), (128, 128, 128))
+    canvas.paste(image, (32, 32))
+    return canvas
 
 
 @spaces.GPU(duration=120)
