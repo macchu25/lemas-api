@@ -8,7 +8,7 @@ from PIL import Image, ImageEnhance, ImageOps
 
 
 BASE_MODEL = "stable-diffusion-v1-5/stable-diffusion-v1-5"
-CONTROLNET_MODEL = "DionTimmer/controlnet_qrcode-control_v1p_sd15"
+CONTROLNET_MODEL = "monster-labs/control_v1p_sd15_qrcode_monster"
 
 controlnet = ControlNetModel.from_pretrained(
     CONTROLNET_MODEL,
@@ -27,7 +27,7 @@ pipe.enable_attention_slicing()
 
 def prepare_qr(image: Image.Image) -> Image.Image:
     image = ImageOps.exif_transpose(image).convert("RGB")
-    image = ImageOps.fit(image, (768, 768), method=Image.Resampling.NEAREST)
+    image = ImageOps.fit(image, (512, 512), method=Image.Resampling.NEAREST)
     image = ImageEnhance.Contrast(image).enhance(1.25)
     return image
 
@@ -51,16 +51,19 @@ def generate(
     control_image = prepare_qr(qr_image)
     pipe.to("cuda")
     generators = [torch.Generator(device="cuda").manual_seed(seed + i) for i in range(num_outputs)]
-    result = pipe(
-        prompt=[prompt] * num_outputs,
-        negative_prompt=[negative_prompt] * num_outputs,
-        image=[control_image] * num_outputs,
-        num_inference_steps=steps,
-        guidance_scale=8.5,
-        controlnet_conditioning_scale=conditioning_scale,
-        generator=generators,
-    )
-    return result.images
+    images = []
+    for generator in generators:
+        result = pipe(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            image=control_image,
+            num_inference_steps=steps,
+            guidance_scale=8.5,
+            controlnet_conditioning_scale=conditioning_scale,
+            generator=generator,
+        )
+        images.extend(result.images)
+    return images
 
 
 with gr.Blocks(title="Lemas Art QR Worker") as demo:

@@ -206,6 +206,9 @@ func waitGradioEvent(ctx context.Context, baseURL, eventID string) ([]string, er
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if event == "error" {
+			if data == "" || data == "null" {
+				return nil, errors.New("Space gặp lỗi khi chạy model; hãy kiểm tra Runtime logs của Hugging Face")
+			}
 			return nil, errors.New(data)
 		}
 		if event == "complete" {

@@ -10,7 +10,7 @@ pinned: false
 license: apache-2.0
 models:
   - stable-diffusion-v1-5/stable-diffusion-v1-5
-  - DionTimmer/controlnet_qrcode-control_v1p_sd15
+  - monster-labs/control_v1p_sd15_qrcode_monster
 ---
 
 # Lemas Art QR ZeroGPU Worker
