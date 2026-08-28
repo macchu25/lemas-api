@@ -12,7 +12,6 @@ import (
 	_ "image/jpeg"
 	"image/png"
 	"io"
-	"mime/multipart"
 	"net/http"
 	"os"
 	"strconv"
@@ -51,7 +50,6 @@ type artQRJob struct {
 	Status      string
 	Style       string
 	Payload     string
-	SourcePNG   []byte
 	Attempt     int
 	MaxAttempts int
 	Rejected    int
@@ -79,8 +77,8 @@ func decodeQRImage(img image.Image) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	value := strings.TrimSpace(result.GetText())
-	if value == "" {
+	value := result.GetText()
+	if strings.TrimSpace(value) == "" {
 		return "", errors.New("empty QR payload")
 	}
 	return value, nil
@@ -124,42 +122,13 @@ func hfBaseURL() (string, error) {
 	return strings.TrimRight(value, "/"), nil
 }
 
-func uploadToGradio(ctx context.Context, baseURL string, data []byte) (string, error) {
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	part, _ := writer.CreateFormFile("files", "qr.png")
-	_, _ = part.Write(data)
-	_ = writer.Close()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/gradio_api/upload", &body)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	hfHeaders(req)
-	resp, err := (&http.Client{Timeout: 45 * time.Second}).Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		message, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return "", fmt.Errorf("Hugging Face upload returned %d: %s", resp.StatusCode, strings.TrimSpace(string(message)))
-	}
-	var paths []string
-	if err := json.NewDecoder(resp.Body).Decode(&paths); err != nil || len(paths) == 0 {
-		return "", errors.New("Hugging Face upload returned no file path")
-	}
-	return paths[0], nil
-}
-
-func callGradio(ctx context.Context, source []byte, preset artQRPreset, seed, count int) ([]string, error) {
+func callGradio(ctx context.Context, payload string, preset artQRPreset, seed, count int) ([]string, error) {
 	baseURL, err := hfBaseURL()
 	if err != nil {
 		return nil, err
 	}
-	path, err := uploadToGradio(ctx, baseURL, source)
-	if err != nil {
-		return nil, err
-	}
 	requestData := map[string]any{"data": []any{
-		map[string]any{"path": path, "meta": map[string]string{"_type": "gradio.FileData"}},
+		payload,
 		preset.Prompt, preset.Negative, preset.Scale, seed, count, 25,
 	}}
 	body, _ := json.Marshal(requestData)
@@ -293,7 +262,7 @@ func runArtQRJob(job *artQRJob) {
 			break
 		}
 		preset.Scale += float64(attempt-1) * 0.15
-		urls, err := callGradio(ctx, job.SourcePNG, preset, int(time.Now().UnixNano()&0x7fffffff), missing)
+		urls, err := callGradio(ctx, job.Payload, preset, int(time.Now().UnixNano()&0x7fffffff), missing)
 		if err != nil {
 			job.mu.Lock()
 			job.Status, job.Error = "failed", friendlyHFError(err)
@@ -358,13 +327,13 @@ func ArtQRJobsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
-	source, payload, err := parseUploadedQR(file)
+	_, payload, err := parseUploadedQR(file)
 	if err != nil {
 		writeJSONError(w, "Không đọc được QR gốc: "+err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
 	userID, _ := r.Context().Value(UserContextKey).(string)
-	job := &artQRJob{ID: uuid.NewString(), UserID: userID, Status: "queued", Style: style, Payload: payload, SourcePNG: source, MaxAttempts: envInt("ART_QR_MAX_ATTEMPTS", 2), CreatedAt: time.Now()}
+	job := &artQRJob{ID: uuid.NewString(), UserID: userID, Status: "queued", Style: style, Payload: payload, MaxAttempts: envInt("ART_QR_MAX_ATTEMPTS", 2), CreatedAt: time.Now()}
 	artQRJobStore.Lock()
 	for id, old := range artQRJobStore.items {
 		if time.Since(old.CreatedAt) > 12*time.Hour {

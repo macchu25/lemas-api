@@ -17,4 +17,6 @@ models:
 
 Private generation worker for Lemas. The public Gradio UI is intentionally minimal; production requests are sent through the named `generate` API endpoint.
 
+The Go API decodes the uploaded QR locally and sends only its exact payload. This worker regenerates an error-correction-H QR on a module-aligned grid, uses QR Monster v2 for conditioning, and applies progressively stronger module correction to the four candidates.
+
 Select **ZeroGPU** in the Space hardware settings after creating the Space.

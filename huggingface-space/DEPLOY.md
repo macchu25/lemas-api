@@ -19,7 +19,7 @@ ART_QR_MAX_ATTEMPTS=2
 
 The Space exposes the named Gradio endpoint `generate` with these inputs in order:
 
-1. QR source image
+1. Decoded QR payload
 2. prompt
 3. negative prompt
 4. QR conditioning scale
