@@ -28,7 +28,7 @@ pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
 pipe.enable_attention_slicing()
 
 
-def build_qr_condition(payload: str) -> tuple[Image.Image, Image.Image]:
+def build_qr_condition(payload: str) -> tuple[Image.Image, Image.Image, Image.Image]:
     qr = qrcode.QRCode(
         error_correction=qrcode.constants.ERROR_CORRECT_H,
         box_size=1,
@@ -48,13 +48,54 @@ def build_qr_condition(payload: str) -> tuple[Image.Image, Image.Image]:
     condition.paste(qr_image, (offset, offset))
     region = Image.new("L", condition.size, 0)
     region.paste(Image.new("L", qr_image.size, 255), (offset, offset))
-    return condition, region
+    functional = Image.new("L", condition.size, 0)
+
+    def protect(left: int, top: int, width: int, height: int) -> None:
+        functional.paste(
+            255,
+            (
+                offset + left * module_size,
+                offset + top * module_size,
+                offset + (left + width) * module_size,
+                offset + (top + height) * module_size,
+            ),
+        )
+
+    border = qr.border
+    symbol_modules = modules - 2 * border
+    protect(border - 1, border - 1, 9, 9)
+    protect(border + symbol_modules - 8, border - 1, 9, 9)
+    protect(border - 1, border + symbol_modules - 8, 9, 9)
+    protect(border, border + 6, symbol_modules, 1)
+    protect(border + 6, border, 1, symbol_modules)
+    protect(border, border + 8, 9, 1)
+    protect(border + 8, border, 1, 9)
+
+    for row in qrcode.util.pattern_position(qr.version):
+        for column in qrcode.util.pattern_position(qr.version):
+            if (
+                (row < 9 and column < 9)
+                or (row < 9 and column > symbol_modules - 9)
+                or (row > symbol_modules - 9 and column < 9)
+            ):
+                continue
+            protect(border + column - 2, border + row - 2, 5, 5)
+
+    return condition, region, functional
 
 
-def correct_modules(image: Image.Image, condition: Image.Image, region: Image.Image, amount: float) -> Image.Image:
+def correct_modules(
+    image: Image.Image,
+    condition: Image.Image,
+    region: Image.Image,
+    functional: Image.Image,
+    amount: float,
+) -> Image.Image:
     image = image.convert("RGB")
     corrected = Image.blend(image, condition, amount)
-    return Image.composite(corrected, image, region)
+    corrected = Image.composite(corrected, image, region)
+    protected = Image.blend(corrected, condition, max(0.94, amount))
+    return Image.composite(protected, corrected, functional)
 
 
 @spaces.GPU(duration=120)
@@ -73,11 +114,11 @@ def generate(
     steps = max(15, min(int(steps), 35))
     conditioning_scale = max(0.8, min(float(conditioning_scale), 2.2))
     seed = int(seed) if int(seed) >= 0 else random.randint(0, 2**31 - 1)
-    control_image, qr_region = build_qr_condition(payload)
+    control_image, qr_region, functional_region = build_qr_condition(payload)
     pipe.to("cuda")
     generators = [torch.Generator(device="cuda").manual_seed(seed + i) for i in range(num_outputs)]
     images = []
-    correction_levels = [0.12, 0.22, 0.34, 0.48]
+    correction_levels = [0.25, 0.45, 0.65, 0.85]
     for index, generator in enumerate(generators):
         result = pipe(
             prompt=prompt,
@@ -91,7 +132,15 @@ def generate(
             height=control_image.height,
         )
         amount = correction_levels[min(index, len(correction_levels) - 1)]
-        images.append(correct_modules(result.images[0], control_image, qr_region, amount))
+        images.append(
+            correct_modules(
+                result.images[0],
+                control_image,
+                qr_region,
+                functional_region,
+                amount,
+            )
+        )
     return images
 
 
