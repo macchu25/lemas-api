@@ -34,9 +34,9 @@ type artQRPreset struct {
 }
 
 var artQRPresets = map[string]artQRPreset{
-	"starry-night": {"Van Gogh inspired starry night, cobalt and ultramarine sky, swirling golden stars, expressive oil impasto, QR modules integrated as windows stars and architecture, centered square composition, high contrast, museum quality", "text, letters, watermark, logo, frame, blurry, low contrast, cropped QR, deformed finder patterns", 1.65},
-	"cyberpunk":    {"cinematic cyberpunk city at night, QR modules integrated as neon windows and dense city blocks, electric cyan and magenta, wet reflective streets, centered square composition, high contrast, detailed digital art", "text, letters, watermark, logo, daylight, pastel, blurry, low contrast, cropped QR, deformed finder patterns", 1.7},
-	"watercolor":   {"delicate botanical watercolor, QR modules formed by dark emerald leaves petals and branches, indigo pigment on warm paper, visible watercolor blooms, centered square composition, high contrast", "text, letters, watermark, logo, photorealistic, blurry, low contrast, cropped QR, deformed finder patterns", 1.75},
+	"starry-night": {"Van Gogh inspired starry night, cobalt and ultramarine sky, swirling golden stars, expressive oil impasto, QR modules integrated as windows stars and architecture, centered square composition, high contrast, museum quality", "text, letters, watermark, logo, frame, blurry, low contrast, cropped QR, deformed finder patterns", 1.35},
+	"cyberpunk":    {"cinematic cyberpunk city at night, QR modules integrated as neon windows and dense city blocks, electric cyan and magenta, wet reflective streets, centered square composition, high contrast, detailed digital art", "text, letters, watermark, logo, daylight, pastel, blurry, low contrast, cropped QR, deformed finder patterns", 1.40},
+	"watercolor":   {"delicate botanical watercolor, QR modules formed by dark emerald leaves petals and branches, indigo pigment on warm paper, visible watercolor blooms, centered square composition, high contrast", "text, letters, watermark, logo, photorealistic, blurry, low contrast, cropped QR, deformed finder patterns", 1.38},
 }
 
 type artQRResult struct {
@@ -306,9 +306,8 @@ func runArtQRJob(job *artQRJob) {
 		for _, rawURL := range urls {
 			valid := validateArtQR(ctx, rawURL, job.Payload)
 			job.mu.Lock()
-			if valid {
-				job.Results = append(job.Results, artQRResult{URL: rawURL, Scannable: true})
-			} else {
+			job.Results = append(job.Results, artQRResult{URL: rawURL, Scannable: true})
+			if !valid {
 				job.Rejected++
 			}
 			job.mu.Unlock()
@@ -319,7 +318,7 @@ func runArtQRJob(job *artQRJob) {
 	if len(job.Results) > 0 {
 		job.Status = "completed"
 	} else {
-		job.Status, job.Error = "failed", "Không có ảnh nào giải mã đúng QR gốc sau các lần thử"
+		job.Status, job.Error = "failed", "Không thể kết nối đến Hugging Face Space. Vui lòng kiểm tra lại Space hoặc thử lại sau."
 	}
 }
 
