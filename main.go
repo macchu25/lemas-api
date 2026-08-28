@@ -81,7 +81,6 @@ func main() {
 		})
 	}
 	mux.HandleFunc("/user/art-qr/jobs", legacyArtQRHandler)
-	mux.HandleFunc("/api/user/art-qr/jobs", legacyArtQRHandler)
 
 	port := os.Getenv("PORT")
 	if port == "" {
