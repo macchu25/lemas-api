@@ -12,7 +12,7 @@ import (
 	"xkiro-backend/internal/artqr/model"
 )
 
-// BuildControlCanvas creates a 1024x1024 canvas with the QR code positioned according to the user's placement coordinates
+// BuildControlCanvas creates a 1024x1024 canvas with Rounded Modules & Rounded Eyes (ComfyQR style)
 func BuildControlCanvas(qrPNG []byte, placement model.Placement, canvasSize int) ([]byte, error) {
 	if canvasSize <= 0 {
 		canvasSize = 1024
@@ -23,7 +23,7 @@ func BuildControlCanvas(qrPNG []byte, placement model.Placement, canvasSize int)
 		return nil, err
 	}
 
-	// 1. Create solid white background canvas (ControlNet SD1.5 standard for QR is black modules on white canvas)
+	// 1. Create solid white background canvas
 	canvas := image.NewRGBA(image.Rect(0, 0, canvasSize, canvasSize))
 	draw.Draw(canvas, canvas.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
 
@@ -49,12 +49,97 @@ func BuildControlCanvas(qrPNG []byte, placement model.Placement, canvasSize int)
 		pSize = canvasSize - py
 	}
 
-	// 3. Scale and draw QR code at destination rectangle
-	targetRect := image.Rect(px, py, px+pSize, py+pSize)
-	scaledQR := scaleImageNearest(qrImg, pSize, pSize)
-	draw.Draw(canvas, targetRect, scaledQR, image.Point{}, draw.Over)
+	// 3. Extract QR binary matrix
+	bounds := qrImg.Bounds()
+	w, h := bounds.Dx(), bounds.Dy()
+	dim := 29
+	matrix := make([][]bool, dim)
+	for r := 0; r < dim; r++ {
+		matrix[r] = make([]bool, dim)
+		sY := bounds.Min.Y + int((float64(r)+0.5)*float64(h)/float64(dim))
+		for c := 0; c < dim; c++ {
+			sX := bounds.Min.X + int((float64(c)+0.5)*float64(w)/float64(dim))
+			rQ, gQ, bQ, _ := qrImg.At(sX, sY).RGBA()
+			lum := (rQ*299 + gQ*587 + bQ*114) / 1000 >> 8
+			matrix[r][c] = lum < 128
+		}
+	}
 
-	// 4. Encode to PNG
+	moduleCount := len(matrix)
+	modSize := float64(pSize) / float64(moduleCount)
+	cornerRad := modSize * 0.46
+
+	// 4. Render Rounded Modules & Rounded Finder Eyes
+	for r := 0; r < moduleCount; r++ {
+		for c := 0; c < moduleCount; c++ {
+			if !matrix[r][c] {
+				continue
+			}
+
+			hasTop := r > 0 && matrix[r-1][c]
+			hasBottom := r < moduleCount-1 && matrix[r+1][c]
+			hasLeft := c > 0 && matrix[r][c-1]
+			hasRight := c < moduleCount-1 && matrix[r][c+1]
+
+			centerX := float64(px) + (float64(c)+0.5)*modSize
+			centerY := float64(py) + (float64(r)+0.5)*modSize
+
+			minX := int(centerX - modSize*0.5)
+			maxX := int(centerX + modSize*0.5)
+			minY := int(centerY - modSize*0.5)
+			maxY := int(centerY + modSize*0.5)
+
+			for destY := minY; destY <= maxY; destY++ {
+				for destX := minX; destX <= maxX; destX++ {
+					if destX < 0 || destX >= canvasSize || destY < 0 || destY >= canvasSize {
+						continue
+					}
+
+					dx := float64(destX) - centerX
+					dy := float64(destY) - centerY
+
+					// Check corner rounding
+					isTopLeft := dx < 0 && dy < 0 && !hasTop && !hasLeft
+					isTopRight := dx > 0 && dy < 0 && !hasTop && !hasRight
+					isBottomLeft := dx < 0 && dy > 0 && !hasBottom && !hasLeft
+					isBottomRight := dx > 0 && dy > 0 && !hasBottom && !hasRight
+
+					if isTopLeft {
+						cornerDx := dx - (-modSize*0.5 + cornerRad)
+						cornerDy := dy - (-modSize*0.5 + cornerRad)
+						if cornerDx < 0 && cornerDy < 0 && math.Hypot(cornerDx, cornerDy) > cornerRad {
+							continue
+						}
+					}
+					if isTopRight {
+						cornerDx := dx - (modSize*0.5 - cornerRad)
+						cornerDy := dy - (-modSize*0.5 + cornerRad)
+						if cornerDx > 0 && cornerDy < 0 && math.Hypot(cornerDx, cornerDy) > cornerRad {
+							continue
+						}
+					}
+					if isBottomLeft {
+						cornerDx := dx - (-modSize*0.5 + cornerRad)
+						cornerDy := dy - (modSize*0.5 - cornerRad)
+						if cornerDx < 0 && cornerDy > 0 && math.Hypot(cornerDx, cornerDy) > cornerRad {
+							continue
+						}
+					}
+					if isBottomRight {
+						cornerDx := dx - (modSize*0.5 - cornerRad)
+						cornerDy := dy - (modSize*0.5 - cornerRad)
+						if cornerDx > 0 && cornerDy > 0 && math.Hypot(cornerDx, cornerDy) > cornerRad {
+							continue
+						}
+					}
+
+					canvas.Set(destX, destY, color.Black)
+				}
+			}
+		}
+	}
+
+	// 5. Encode to PNG
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, canvas); err != nil {
 		return nil, err
