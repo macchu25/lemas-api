@@ -175,8 +175,8 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 	job.Prompt = finalPrompt
 	job.NegativePrompt = negativePrompt
 
-	// Step C: Low-to-high conditioning search (0.70 -> 1.20)
-	conditioningScales := []float64{0.70, 0.80, 0.90, 1.00, 1.10, 1.20}
+	// Step C: Adaptive conditioning search (1.10 -> 1.50)
+	conditioningScales := []float64{1.10, 1.20, 1.30, 1.40, 1.50}
 	job.MaxAttempts = len(conditioningScales)
 	targetOutputs := 1
 
@@ -208,7 +208,7 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 			ReferenceImageBytes: job.ReferenceImageJPEG,
 			Placement:           job.Placement,
 			ConditioningScale:   currentScale,
-			ReferenceStrength:   0.45,
+			ReferenceStrength:   0.62,
 			GuidanceScale:       7.5,
 			Seed:                seed,
 			Width:               1024,
