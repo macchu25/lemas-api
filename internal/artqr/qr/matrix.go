@@ -88,15 +88,41 @@ func CompositeArtQRExact(artBytes []byte, payload string, qrPNG []byte, placemen
 		placement = model.DefaultPlacement()
 	}
 
-	// 1. Create 1024x1024 canvas and scale art image to fill
-	canvas := image.NewRGBA(image.Rect(0, 0, canvasSize, canvasSize))
-	scaledArt := scaleImageBilinear(artImg, canvasSize, canvasSize)
+	// 1. Preserve original aspect ratio of reference artwork
+	origBounds := artImg.Bounds()
+	origW := origBounds.Dx()
+	origH := origBounds.Dy()
+
+	canvasW := canvasSize
+	canvasH := canvasSize
+	if origW > 0 && origH > 0 {
+		if origW >= origH {
+			canvasW = canvasSize
+			canvasH = int(float64(canvasSize) * float64(origH) / float64(origW))
+		} else {
+			canvasH = canvasSize
+			canvasW = int(float64(canvasSize) * float64(origW) / float64(origH))
+		}
+	}
+	if canvasW < 512 {
+		canvasW = 512
+	}
+	if canvasH < 512 {
+		canvasH = 512
+	}
+
+	canvas := image.NewRGBA(image.Rect(0, 0, canvasW, canvasH))
+	scaledArt := scaleImageBilinear(artImg, canvasW, canvasH)
 	draw.Draw(canvas, canvas.Bounds(), scaledArt, image.Point{}, draw.Src)
 
 	// 2. Compute placement rectangle
-	px := int(placement.X * float64(canvasSize))
-	py := int(placement.Y * float64(canvasSize))
-	pSize := int(placement.Size * float64(canvasSize))
+	px := int(placement.X * float64(canvasW))
+	py := int(placement.Y * float64(canvasH))
+	minDim := canvasW
+	if canvasH < minDim {
+		minDim = canvasH
+	}
+	pSize := int(placement.Size * float64(minDim))
 
 	if px < 0 {
 		px = 0
@@ -104,11 +130,11 @@ func CompositeArtQRExact(artBytes []byte, payload string, qrPNG []byte, placemen
 	if py < 0 {
 		py = 0
 	}
-	if px+pSize > canvasSize {
-		pSize = canvasSize - px
+	if px+pSize > canvasW {
+		pSize = canvasW - px
 	}
-	if py+pSize > canvasSize {
-		pSize = canvasSize - py
+	if py+pSize > canvasH {
+		pSize = canvasH - py
 	}
 
 	// 3. Extract exact mathematical QR matrix
@@ -148,12 +174,12 @@ func CompositeArtQRExact(artBytes []byte, payload string, qrPNG []byte, placemen
 	moduleCount := len(matrix)
 	modSize := float64(pSize) / float64(moduleCount)
 
-	// 4. Render Organic Painterly Strokes with Guaranteed Optical Scan Contrast
+	// 4. Render Seamless QR without Any White Rectangular Card
 	for r := 0; r < moduleCount; r++ {
 		for c := 0; c < moduleCount; c++ {
 			isDark := matrix[r][c]
 
-			// Finder Pattern corner zones
+			// Finder Pattern corner zones (7x7 modules)
 			isFinderTL := r < 8 && c < 8
 			isFinderTR := r < 8 && c >= moduleCount-8
 			isFinderBL := r >= moduleCount-8 && c < 8
@@ -170,7 +196,7 @@ func CompositeArtQRExact(artBytes []byte, payload string, qrPNG []byte, placemen
 
 			for destY := minY; destY <= maxY; destY++ {
 				for destX := minX; destX <= maxX; destX++ {
-					if destX < 0 || destX >= canvasSize || destY < 0 || destY >= canvasSize {
+					if destX < 0 || destX >= canvasW || destY < 0 || destY >= canvasH {
 						continue
 					}
 
@@ -183,9 +209,8 @@ func CompositeArtQRExact(artBytes []byte, payload string, qrPNG []byte, placemen
 					r8, g8, b8 := uint8(rO>>8), uint8(gO>>8), uint8(bO>>8)
 
 					if isFinderZone {
-						// Concentric Finder Pattern with softened corners
+						// Finder Pattern with softened aesthetic corners
 						if isDark {
-							// Deep rich shadow
 							canvas.Set(destX, destY, color.RGBA{
 								R: uint8(float64(r8) * 0.08),
 								G: uint8(float64(g8) * 0.08),
@@ -193,21 +218,23 @@ func CompositeArtQRExact(artBytes []byte, payload string, qrPNG []byte, placemen
 								A: 255,
 							})
 						} else {
-							// Luminous celestial highlight
+							// Highlight finder ring matching local background luminance
 							canvas.Set(destX, destY, color.RGBA{
-								R: clamp255(int(r8)/4 + 205),
-								G: clamp255(int(g8)/4 + 205),
-								B: clamp255(int(b8)/4 + 205),
+								R: clamp255(int(r8)/3 + 175),
+								G: clamp255(int(g8)/3 + 175),
+								B: clamp255(int(b8)/3 + 175),
 								A: 255,
 							})
 						}
 					} else {
-						// Baseline contrast guarantee across the entire cell + organic center texture
+						// Data modules: NO WHITE BOX. Only modulate dark elements!
 						if isDark {
-							baseBlend := 0.15 + (0.05 * (dist / radius))
-							if baseBlend > 0.20 {
-								baseBlend = 0.20
+							// Organic dark module daub
+							weight := 1.0 - (dist / radius)
+							if weight < 0 {
+								weight = 0
 							}
+							baseBlend := 0.12 + (0.06 * (1.0 - weight))
 							canvas.Set(destX, destY, color.RGBA{
 								R: uint8(float64(r8) * baseBlend),
 								G: uint8(float64(g8) * baseBlend),
@@ -215,16 +242,18 @@ func CompositeArtQRExact(artBytes []byte, payload string, qrPNG []byte, placemen
 								A: 255,
 							})
 						} else {
-							glow := 205 - int(20.0*(dist/radius))
-							if glow < 185 {
-								glow = 185
+							// Light module: Keep natural portrait colors untouched!
+							// Subtle soft radiance only if image region is very dark
+							lum := (uint32(r8)*299 + uint32(g8)*587 + uint32(b8)*114) / 1000
+							if lum < 90 {
+								glow := int(float64(140-lum) * 0.6)
+								canvas.Set(destX, destY, color.RGBA{
+									R: clamp255(int(r8) + glow),
+									G: clamp255(int(g8) + glow),
+									B: clamp255(int(b8) + glow),
+									A: 255,
+								})
 							}
-							canvas.Set(destX, destY, color.RGBA{
-								R: clamp255(int(r8)/4 + glow),
-								G: clamp255(int(g8)/4 + glow),
-								B: clamp255(int(b8)/4 + glow),
-								A: 255,
-							})
 						}
 					}
 				}
