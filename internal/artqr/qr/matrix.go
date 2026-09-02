@@ -63,6 +63,11 @@ func BuildControlCanvas(qrPNG []byte, placement model.Placement, canvasSize int)
 
 // CompositeArtQR blends the artistic background painting and the QR code into a finalized scannable Art QR
 func CompositeArtQR(artBytes []byte, qrPNG []byte, placement model.Placement, canvasSize int) ([]byte, error) {
+	return CompositeArtQRWithStyle(artBytes, qrPNG, placement, canvasSize, 0)
+}
+
+// CompositeArtQRWithStyle blends the painting and QR code with customizable artistic style profiles
+func CompositeArtQRWithStyle(artBytes []byte, qrPNG []byte, placement model.Placement, canvasSize int, variation int) ([]byte, error) {
 	if canvasSize <= 0 {
 		canvasSize = 1024
 	}
@@ -104,9 +109,18 @@ func CompositeArtQR(artBytes []byte, qrPNG []byte, placement model.Placement, ca
 		pSize = canvasSize - py
 	}
 
-	// 3. Blend QR modules into canvas using Multiply luminosity blending
+	// 3. Scale QR with nearest-neighbor for sharp module alignment
 	scaledQR := scaleImageNearest(qrImg, pSize, pSize)
 	qrBounds := scaledQR.Bounds()
+
+	// 4. Style-aware contrast & texture parameters
+	cornerRatio := 0.285
+	cornerSize := int(float64(pSize) * cornerRatio)
+
+	darkFactors := []float64{0.18, 0.12, 0.22, 0.15}
+	lightGlows := []int{180, 210, 160, 200}
+	dFactor := darkFactors[variation%len(darkFactors)]
+	lGlow := lightGlows[variation%len(lightGlows)]
 
 	for y := 0; y < pSize; y++ {
 		for x := 0; x < pSize; x++ {
@@ -116,7 +130,7 @@ func CompositeArtQR(artBytes []byte, qrPNG []byte, placement model.Placement, ca
 				continue
 			}
 
-			// Luminance of QR pixel
+			// Luminance of QR pixel (0 = black module, 255 = white module)
 			lumQ := (rQ*299 + gQ*587 + bQ*114) / 1000 >> 8
 
 			destX := px + x
@@ -125,8 +139,7 @@ func CompositeArtQR(artBytes []byte, qrPNG []byte, placement model.Placement, ca
 				continue
 			}
 
-			// Check if pixel is within one of the 3 Finder Pattern corner zones
-			cornerSize := int(float64(pSize) * 0.28)
+			// Check 3 Finder Pattern corner zones
 			isTopLeft := x < cornerSize && y < cornerSize
 			isTopRight := x >= pSize-cornerSize && y < cornerSize
 			isBottomLeft := x < cornerSize && y >= pSize-cornerSize
@@ -137,20 +150,40 @@ func CompositeArtQR(artBytes []byte, qrPNG []byte, placement model.Placement, ca
 			r8, g8, b8 := uint8(rO>>8), uint8(gO>>8), uint8(bO>>8)
 
 			if isFinderZone {
-				// High-contrast preservation for camera scanners
+				// Precision contrast for camera scanner lock-on
 				if lumQ < 128 {
-					canvas.Set(destX, destY, color.RGBA{R: r8 / 5, G: g8 / 5, B: b8 / 5, A: 255})
+					// Deep rich shadow from artwork tones
+					canvas.Set(destX, destY, color.RGBA{
+						R: uint8(float64(r8) * 0.08),
+						G: uint8(float64(g8) * 0.08),
+						B: uint8(float64(b8) * 0.08),
+						A: 255,
+					})
 				} else {
-					canvas.Set(destX, destY, color.RGBA{R: clamp255(int(r8) + 80), G: clamp255(int(g8) + 80), B: clamp255(int(b8) + 80), A: 255})
+					// Luminous highlight with warm artwork undertone
+					canvas.Set(destX, destY, color.RGBA{
+						R: clamp255(int(r8)/4 + 190),
+						G: clamp255(int(g8)/4 + 190),
+						B: clamp255(int(b8)/4 + 190),
+						A: 255,
+					})
 				}
 			} else {
-				// Artistic multiply blending
-				if lumQ < 130 {
-					// Dark module: darken artwork
+				// Seamless painting texture harmonization
+				if lumQ < 128 {
+					// Dark module: seamlessly darken underlying paint strokes
 					canvas.Set(destX, destY, color.RGBA{
-						R: uint8(int(r8) * 35 / 100),
-						G: uint8(int(g8) * 35 / 100),
-						B: uint8(int(b8) * 35 / 100),
+						R: uint8(float64(r8) * dFactor),
+						G: uint8(float64(g8) * dFactor),
+						B: uint8(float64(b8) * dFactor),
+						A: 255,
+					})
+				} else {
+					// Light module: illuminate underlying paint strokes into glowing highlights
+					canvas.Set(destX, destY, color.RGBA{
+						R: clamp255(int(r8)*3/10 + lGlow),
+						G: clamp255(int(g8)*3/10 + lGlow),
+						B: clamp255(int(b8)*3/10 + lGlow),
 						A: 255,
 					})
 				}

@@ -216,23 +216,26 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 		job.UpdateStatus("validating", currentProgress+5)
 
 		// Step D: Strict QR Validation & Synthesis
-		for _, cand := range candidates {
-			finalImgBytes := cand.PNGBytes
+		for idx, cand := range candidates {
+			baseArtBytes := cand.PNGBytes
+			// CRITICAL: If user uploaded custom reference image, always use user's reference image as base!
+			if len(job.ReferenceImageJPEG) > 0 {
+				baseArtBytes = job.ReferenceImageJPEG
+			}
+
+			finalImgBytes := baseArtBytes
 			finalURL := cand.URL
 
-			// If candidate is a raw background painting, composite the QR onto it at the placement coordinates
-			vResult := qr.ValidateGeneratedQR(finalImgBytes, job.OriginalPayload)
-			if !vResult.Valid && len(job.SourceQRPNG) > 0 {
-				composited, compErr := qr.CompositeArtQR(cand.PNGBytes, job.SourceQRPNG, job.Placement, 1024)
+			if len(job.SourceQRPNG) > 0 && len(baseArtBytes) > 0 {
+				composited, compErr := qr.CompositeArtQRWithStyle(baseArtBytes, job.SourceQRPNG, job.Placement, 1024, idx)
 				if compErr == nil && len(composited) > 0 {
 					finalImgBytes = composited
-					vResult = qr.ValidateGeneratedQR(finalImgBytes, job.OriginalPayload)
-					// Encode to Data URI for seamless instant display
 					finalURL = "data:image/png;base64," + base64.StdEncoding.EncodeToString(composited)
 				}
 			}
 
-			if vResult.Valid || len(finalURL) > 0 {
+			vResult := qr.ValidateGeneratedQR(finalImgBytes, job.OriginalPayload)
+			if vResult.Valid {
 				job.AddOutput(model.OutputImage{
 					URL:                finalURL,
 					Verified:           true,
