@@ -61,6 +61,13 @@ func (h *HuggingFaceProvider) generateGradio(ctx context.Context, req *Generatio
 		}
 	}
 
+	px := req.Placement.X
+	py := req.Placement.Y
+	psize := req.Placement.Size
+	if psize <= 0 {
+		psize = 0.45
+	}
+
 	callPayload := map[string]any{
 		"data": []any{
 			req.Payload,
@@ -71,6 +78,9 @@ func (h *HuggingFaceProvider) generateGradio(ctx context.Context, req *Generatio
 			count,
 			25, // steps
 			refData,
+			px,
+			py,
+			psize,
 		},
 	}
 

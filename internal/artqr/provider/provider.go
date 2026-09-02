@@ -2,6 +2,8 @@ package provider
 
 import (
 	"context"
+
+	"xkiro-backend/internal/artqr/model"
 )
 
 type GenerationRequest struct {
@@ -10,6 +12,7 @@ type GenerationRequest struct {
 	NegativePrompt      string
 	QRControlImagePNG   []byte
 	ReferenceImageBytes []byte
+	Placement           model.Placement
 	ConditioningScale   float64
 	GuidanceScale       float64
 	Seed                int

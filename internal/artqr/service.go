@@ -2,7 +2,6 @@ package artqr
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -196,6 +195,7 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 			NegativePrompt:      negativePrompt,
 			QRControlImagePNG:   job.ControlCanvasPNG,
 			ReferenceImageBytes: job.ReferenceImageJPEG,
+			Placement:           job.Placement,
 			ConditioningScale:   currentScale,
 			GuidanceScale:       7.5,
 			Seed:                seed,
@@ -215,29 +215,12 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 
 		job.UpdateStatus("validating", currentProgress+5)
 
-		// Step D: Strict QR Validation & Synthesis
-		for idx, cand := range candidates {
-			baseArtBytes := cand.PNGBytes
-			// CRITICAL: If user uploaded custom reference image, always use user's reference image as base!
-			if len(job.ReferenceImageJPEG) > 0 {
-				baseArtBytes = job.ReferenceImageJPEG
-			}
-
-			finalImgBytes := baseArtBytes
-			finalURL := cand.URL
-
-			if len(baseArtBytes) > 0 && (len(job.OriginalPayload) > 0 || len(job.SourceQRPNG) > 0) {
-				composited, compErr := qr.CompositeArtQRExact(baseArtBytes, job.OriginalPayload, job.SourceQRPNG, job.Placement, 1024, idx)
-				if compErr == nil && len(composited) > 0 {
-					finalImgBytes = composited
-					finalURL = "data:image/png;base64," + base64.StdEncoding.EncodeToString(composited)
-				}
-			}
-
-			vResult := qr.ValidateGeneratedQR(finalImgBytes, job.OriginalPayload)
+		// Step D: Direct Validation of Single-Pass AI Diffusion Output (NO SEPARATE COMPOSITE / NO PASTE)
+		for _, cand := range candidates {
+			vResult := qr.ValidateGeneratedQR(cand.PNGBytes, job.OriginalPayload)
 			if vResult.Valid {
 				job.AddOutput(model.OutputImage{
-					URL:                finalURL,
+					URL:                cand.URL,
 					Verified:           true,
 					DecodedPayloadHash: vResult.PayloadHash,
 					Seed:               cand.Seed,

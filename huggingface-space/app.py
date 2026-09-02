@@ -71,7 +71,7 @@ def gpu_worker(fn):
     return spaces.GPU(duration=120)(fn) if HAVE_SPACES else fn
 
 
-def build_qr_condition(payload: str) -> tuple[Image.Image, Image.Image, Image.Image]:
+def build_qr_condition(payload: str, placement_x: float = 0.5, placement_y: float = 0.5, placement_size: float = 0.45, canvas_size: int = 1024) -> Image.Image:
     qr = qrcode.QRCode(
         error_correction=qrcode.constants.ERROR_CORRECT_H,
         box_size=1,
@@ -79,66 +79,28 @@ def build_qr_condition(payload: str) -> tuple[Image.Image, Image.Image, Image.Im
     )
     qr.add_data(payload, optimize=0)
     qr.make(fit=True)
-    modules = len(qr.get_matrix())
-    module_size = 16 if modules * 16 <= 896 else 12 if modules * 12 <= 896 else 8
-    qr.box_size = module_size
     qr_image = qr.make_image(fill_color="black", back_color="white").convert("RGB")
-    canvas_size = max(512, math.ceil((qr_image.width + 8 * module_size) / 256) * 256)
-    if canvas_size > 1024:
-        raise gr.Error("QR payload is too dense for artistic generation")
-    offset = ((canvas_size - qr_image.width) // 2 // module_size) * module_size
+    
+    # Scale QR to placed dimension
+    qr_px = max(160, int(placement_size * canvas_size))
+    qr_resized = qr_image.resize((qr_px, qr_px), Image.Resampling.NEAREST)
+    
+    offset_x = int(placement_x * canvas_size)
+    offset_y = int(placement_y * canvas_size)
+    
+    if offset_x + qr_px > canvas_size:
+        offset_x = canvas_size - qr_px
+    if offset_y + qr_px > canvas_size:
+        offset_y = canvas_size - qr_px
+    if offset_x < 0:
+        offset_x = 0
+    if offset_y < 0:
+        offset_y = 0
+
+    # Full-canvas neutral gray control image (128,128,128 = no effect outside QR region)
     condition = Image.new("RGB", (canvas_size, canvas_size), (128, 128, 128))
-    condition.paste(qr_image, (offset, offset))
-    region = Image.new("L", condition.size, 0)
-    region.paste(Image.new("L", qr_image.size, 255), (offset, offset))
-    functional = Image.new("L", condition.size, 0)
-
-    def protect(left: int, top: int, width: int, height: int) -> None:
-        functional.paste(
-            255,
-            (
-                offset + left * module_size,
-                offset + top * module_size,
-                offset + (left + width) * module_size,
-                offset + (top + height) * module_size,
-            ),
-        )
-
-    border = qr.border
-    symbol_modules = modules - 2 * border
-    protect(border - 1, border - 1, 9, 9)
-    protect(border + symbol_modules - 8, border - 1, 9, 9)
-    protect(border - 1, border + symbol_modules - 8, 9, 9)
-    protect(border, border + 6, symbol_modules, 1)
-    protect(border + 6, border, 1, symbol_modules)
-    protect(border, border + 8, 9, 1)
-    protect(border + 8, border, 1, 9)
-
-    for row in qrcode.util.pattern_position(qr.version):
-        for column in qrcode.util.pattern_position(qr.version):
-            if (
-                (row < 9 and column < 9)
-                or (row < 9 and column > symbol_modules - 9)
-                or (row > symbol_modules - 9 and column < 9)
-            ):
-                continue
-            protect(border + column - 2, border + row - 2, 5, 5)
-
-    return condition, region, functional
-
-
-def correct_modules(
-    image: Image.Image,
-    condition: Image.Image,
-    region: Image.Image,
-    functional: Image.Image,
-    amount: float,
-) -> Image.Image:
-    image = image.convert("RGB")
-    corrected = Image.blend(image, condition, amount)
-    corrected = Image.composite(corrected, image, region)
-    protected = Image.blend(corrected, condition, max(0.94, amount))
-    return Image.composite(protected, corrected, functional)
+    condition.paste(qr_resized, (offset_x, offset_y))
+    return condition
 
 
 @gpu_worker
@@ -151,6 +113,9 @@ def generate(
     num_outputs: int,
     steps: int,
     ref_image: Image.Image | None = None,
+    placement_x: float = 0.28,
+    placement_y: float = 0.28,
+    placement_size: float = 0.45,
 ):
     if not payload:
         raise gr.Error("QR payload is required")
@@ -158,7 +123,8 @@ def generate(
     steps = max(15, min(int(steps), 35))
     conditioning_scale = max(0.8, min(float(conditioning_scale), 2.2))
     seed = int(seed) if int(seed) >= 0 else random.randint(0, 2**31 - 1)
-    control_image, qr_region, functional_region = build_qr_condition(payload)
+    
+    control_image = build_qr_condition(payload, float(placement_x), float(placement_y), float(placement_size), 1024)
 
     if not LOCAL_WORKER:
         pipe.to("cuda")
@@ -166,21 +132,21 @@ def generate(
 
     generators = [torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(seed + i) for i in range(num_outputs)]
     images = []
-    correction_levels = [0.20, 0.35, 0.50, 0.70]
 
-    # Resize reference image if provided for style harmonization
+    # Scale reference image to 1024x1024 for full-canvas single-pass diffusion
     init_image = None
     if ref_image is not None:
         init_image = ImageOps.fit(ref_image.convert("RGB"), control_image.size, Image.Resampling.LANCZOS)
 
-    for index, generator in enumerate(generators):
+    for generator in generators:
         if init_image is not None:
+            # Single-pass full-canvas diffusion conditioned by reference image and full-canvas QR control
             result = img2img_pipe(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
                 image=init_image,
                 control_image=control_image,
-                strength=0.82,
+                strength=0.74,
                 num_inference_steps=steps,
                 guidance_scale=8.0,
                 controlnet_conditioning_scale=conditioning_scale,
@@ -199,16 +165,7 @@ def generate(
                 height=control_image.height,
             )
 
-        amount = correction_levels[min(index, len(correction_levels) - 1)]
-        images.append(
-            correct_modules(
-                result.images[0],
-                control_image,
-                qr_region,
-                functional_region,
-                amount,
-            )
-        )
+        images.append(result.images[0])
     return images
 
 
@@ -222,12 +179,16 @@ with gr.Blocks(title="Lemas Art QR Worker") as demo:
     with gr.Row():
         scale_input = gr.Slider(0.8, 2.2, value=1.35, step=0.05, label="QR conditioning")
         seed_input = gr.Number(value=-1, precision=0, label="Seed")
-        count_input = gr.Slider(1, 4, value=4, step=1, label="Outputs")
+        count_input = gr.Slider(1, 4, value=1, step=1, label="Outputs")
         steps_input = gr.Slider(15, 35, value=25, step=1, label="Steps")
     ref_image_input = gr.Image(label="Optional Reference Style Image", type="pil")
+    with gr.Row():
+        px_input = gr.Number(value=0.28, label="Placement X")
+        py_input = gr.Number(value=0.28, label="Placement Y")
+        psize_input = gr.Number(value=0.45, label="Placement Size")
     gr.Button("Generate", variant="primary").click(
         generate,
-        inputs=[payload_input, prompt_input, negative_input, scale_input, seed_input, count_input, steps_input, ref_image_input],
+        inputs=[payload_input, prompt_input, negative_input, scale_input, seed_input, count_input, steps_input, ref_image_input, px_input, py_input, psize_input],
         outputs=output,
         api_name="generate",
     )
