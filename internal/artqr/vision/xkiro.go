@@ -42,6 +42,9 @@ type XKiroVisionAnalyzer struct {
 func NewXKiroVisionAnalyzer() *XKiroVisionAnalyzer {
 	baseURL := strings.TrimRight(os.Getenv("XKIRO_BASE_URL"), "/")
 	if baseURL == "" {
+		baseURL = strings.TrimRight(os.Getenv("UPSTREAM_BASE_URL"), "/")
+	}
+	if baseURL == "" {
 		baseURL = "https://api.xkiro.com/v1"
 	}
 	modelName := os.Getenv("XKIRO_VISION_MODEL")
@@ -49,6 +52,12 @@ func NewXKiroVisionAnalyzer() *XKiroVisionAnalyzer {
 		modelName = "deepseek/deepseek-v4-flash-vision-exp"
 	}
 	apiKey := os.Getenv("XKIRO_API_KEY")
+	if apiKey == "" {
+		keys := strings.Split(os.Getenv("UPSTREAM_API_KEYS"), ",")
+		if len(keys) > 0 && strings.TrimSpace(keys[0]) != "" {
+			apiKey = strings.TrimSpace(keys[0])
+		}
+	}
 
 	return &XKiroVisionAnalyzer{
 		BaseURL: baseURL,

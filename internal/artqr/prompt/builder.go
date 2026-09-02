@@ -127,8 +127,18 @@ func BuildPrompt(preset *model.ArtQRPreset, analysis *vision.StyleAnalysisResult
 	var basePrompt string
 	negativePrompt := StandardNegativePrompt
 
-	if analysis != nil {
-		basePrompt = "Masterpiece artwork preserving the exact character, person, clothes, texture, and background of the reference image. The QR code structure is seamlessly integrated into the natural shadows, highlights, and fabric texture without separate borders or cards."
+	if analysis != nil && analysis.GeneratedPrompt != "" {
+		paletteStr := strings.Join(analysis.Palette, ", ")
+		basePrompt = fmt.Sprintf(
+			"Masterpiece %s composition, %s. Color palette: %s. Texture: %s. Lighting: %s. "+
+				"Preserve the exact character, person, clothes, textures, and details of the image. "+
+				"The QR code structure is seamlessly integrated into the natural shadows, contours, and highlights. Do NOT draw a separate QR card, border or sticker on top.",
+			analysis.Style,
+			analysis.GeneratedPrompt,
+			paletteStr,
+			analysis.Texture,
+			analysis.Lighting,
+		)
 	} else if preset != nil {
 		basePrompt = preset.Prompt
 		if preset.NegativePrompt != "" {
