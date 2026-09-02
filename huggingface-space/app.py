@@ -160,18 +160,22 @@ def generate(
             # 4. Use pure high-contrast QR control directly on the cropped patch
             ctrl_patch = control_image.resize((768, 768), Image.Resampling.NEAREST)
 
-            # 5. Diffuse ONLY that cropped patch with QR ControlNet
+            # 5. Tailor patch prompt for seamless fabric/surface embroidery without hallucinating faces
+            patch_prompt = prompt + ", intricate geometric embroidery pattern, woven cloth texture, sharp contrast, masterwork craft"
+            patch_negative = negative_prompt + ", person, human face, eyes, head, body, low quality, deformed, watermark"
+
+            # Diffuse ONLY that cropped patch with QR ControlNet
             patch_result = img2img_pipe(
-                prompt=prompt,
-                negative_prompt=negative_prompt,
+                prompt=patch_prompt,
+                negative_prompt=patch_negative,
                 image=ref_patch,
                 control_image=ctrl_patch,
-                strength=reference_strength,
+                strength=0.65,
                 num_inference_steps=steps,
-                guidance_scale=8.0,
-                controlnet_conditioning_scale=conditioning_scale,
+                guidance_scale=8.5,
+                controlnet_conditioning_scale=max(1.35, conditioning_scale),
                 control_guidance_start=0.0,
-                control_guidance_end=0.88,
+                control_guidance_end=0.95,
                 generator=generator,
             ).images[0]
 
