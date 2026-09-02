@@ -19,13 +19,40 @@ var DefaultPresets = []model.ArtQRPreset{
 		PreviewURL:  "https://images.unsplash.com/photo-1579783900882-c0d3dad7b119?w=600&auto=format&fit=crop&q=80",
 		Colors:      []string{"#0b1e3f", "#1d4ed8", "#eab308"},
 		Prompt: `Create an artistic QR code seamlessly integrated into a Starry Night inspired oil painting.
+
 The QR code structure must remain geometrically accurate and fully machine-scannable. Preserve the exact QR module positions and all three finder patterns from the control image.
+
 Do NOT draw a QR code on top of a painting. Instead, make the painting itself form the QR code.
+
 Transform dark QR modules naturally into deep navy and ultramarine brush strokes, shadows, cypress branches, rooftops, hills and dark parts of the night sky.
+
 Transform light QR areas into swirling blue-white clouds, glowing golden stars, moonlight and illuminated brush strokes.
+
 Continuous flowing brush strokes should pass naturally through and around the QR structure so that the square grid is visually disguised.
-Composition: dramatic swirling night sky, luminous golden stars, bright moon, tall dark cypress on the left, small village along the bottom.
-Thick expressive oil paint, visible impasto texture, deep cobalt blue, ultramarine, navy, turquoise, cream and luminous yellow.`,
+
+Integrate the three QR finder patterns into the composition as natural visual structures while preserving their exact geometry and strong contrast for scanning.
+
+Composition:
+- dramatic swirling night sky
+- large flowing spiral across the center
+- luminous golden stars
+- bright moon in the upper-right
+- tall dark cypress on the left
+- small European village along the bottom
+- church steeple near the center
+- rolling blue hills in the distance
+
+Thick expressive oil paint, visible impasto texture, energetic curved brush strokes, deep cobalt blue, ultramarine, navy, turquoise, cream and luminous yellow.
+
+From a distance it should look primarily like an expressive night landscape painting.
+The QR structure should only become noticeable on closer inspection.
+
+CRITICAL:
+Preserve the control QR geometry.
+Do not invent, move, remove, merge or add QR modules.
+Maintain sufficient luminance contrast between dark and light QR regions.
+Prioritize QR scan reliability while maximizing artistic integration.
+No text, no logos, no borders, no separate QR card.`,
 		NegativePrompt:    StandardNegativePrompt,
 		ConditioningScale: 1.35,
 		GuidanceScale:     7.5,
