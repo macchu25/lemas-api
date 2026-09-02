@@ -4,9 +4,12 @@ import os
 
 import gradio as gr
 import qrcode
-LOCAL_WORKER = os.getenv("ART_QR_LOCAL") == "1"
-if not LOCAL_WORKER:
+try:
     import spaces
+    HAVE_SPACES = True
+except ImportError:
+    HAVE_SPACES = False
+
 import torch
 from diffusers import (
     ControlNetModel,
@@ -31,7 +34,6 @@ pipe = StableDiffusionControlNetPipeline.from_pretrained(
     controlnet=controlnet,
     torch_dtype=torch.float16,
     use_safetensors=True,
-    variant="fp16" if LOCAL_WORKER else None,
     safety_checker=None,
     requires_safety_checker=False,
 )
@@ -66,7 +68,7 @@ else:
 
 
 def gpu_worker(fn):
-    return fn if LOCAL_WORKER else spaces.GPU(duration=120)(fn)
+    return spaces.GPU(duration=120)(fn) if HAVE_SPACES else fn
 
 
 def build_qr_condition(payload: str) -> tuple[Image.Image, Image.Image, Image.Image]:
