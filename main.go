@@ -65,6 +65,12 @@ func main() {
 	mux.HandleFunc("/api/admin/giftcodes", handlers.AdminAuthMiddleware(handlers.AdminGiftcodesHandler))
 	mux.HandleFunc("/api/admin/giftcodes/delete", handlers.AdminAuthMiddleware(handlers.AdminDeleteGiftcodeHandler))
 
+	// Modular Art QR Pipeline Endpoints
+	mux.HandleFunc("/api/art-qr/generate", handlers.GenerateArtQRHandler)
+	mux.HandleFunc("/api/art-qr/jobs/", handlers.GetArtQRJobHandler)
+	mux.HandleFunc("/api/art-qr/jobs", handlers.GetArtQRJobHandler)
+	mux.HandleFunc("/api/art-qr/presets", handlers.ArtQRPresetsHandler)
+
 	// User Giftcode Redemption & Daily Image Quota
 	mux.HandleFunc("/api/user/giftcode/redeem", handlers.AuthMiddleware(handlers.RedeemGiftcodeHandler))
 	mux.HandleFunc("/api/user/image/quota", handlers.AuthMiddleware(handlers.ImageQuotaHandler))
