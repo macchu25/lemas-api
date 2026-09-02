@@ -183,9 +183,9 @@ func CompositeArtQRExact(artBytes []byte, payload string, qrPNG []byte, placemen
 					r8, g8, b8 := uint8(rO>>8), uint8(gO>>8), uint8(bO>>8)
 
 					if isFinderZone {
-						// Concentric Finder Halo with softened rounded corners
+						// Concentric Finder Pattern with softened corners
 						if isDark {
-							// Deep rich oil shadow
+							// Deep rich shadow
 							canvas.Set(destX, destY, color.RGBA{
 								R: uint8(float64(r8) * 0.08),
 								G: uint8(float64(g8) * 0.08),
@@ -202,31 +202,27 @@ func CompositeArtQRExact(artBytes []byte, payload string, qrPNG []byte, placemen
 							})
 						}
 					} else {
-						// Organic painterly stroke with soft edge falloff
-						weight := 1.0 - (dist / radius)
-						if weight < 0 {
-							weight = 0
-						}
-						if weight > 1 {
-							weight = 1
-						}
-
+						// Baseline contrast guarantee across the entire cell + organic center texture
 						if isDark {
-							// Dark oil paint stroke
-							blend := 1.0 - (0.86 * weight)
+							baseBlend := 0.15 + (0.05 * (dist / radius))
+							if baseBlend > 0.20 {
+								baseBlend = 0.20
+							}
 							canvas.Set(destX, destY, color.RGBA{
-								R: uint8(float64(r8) * blend),
-								G: uint8(float64(g8) * blend),
-								B: uint8(float64(b8) * blend),
+								R: uint8(float64(r8) * baseBlend),
+								G: uint8(float64(g8) * baseBlend),
+								B: uint8(float64(b8) * baseBlend),
 								A: 255,
 							})
 						} else {
-							// Radiant paint highlight / star stroke
-							glow := int(195.0 * weight)
+							glow := 205 - int(20.0*(dist/radius))
+							if glow < 185 {
+								glow = 185
+							}
 							canvas.Set(destX, destY, color.RGBA{
-								R: clamp255(int(r8)*2/10 + glow),
-								G: clamp255(int(g8)*2/10 + glow),
-								B: clamp255(int(b8)*2/10 + glow),
+								R: clamp255(int(r8)/4 + glow),
+								G: clamp255(int(g8)/4 + glow),
+								B: clamp255(int(b8)/4 + glow),
 								A: 255,
 							})
 						}
