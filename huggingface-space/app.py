@@ -156,9 +156,9 @@ def generate(
                 negative_prompt=negative_prompt,
                 image=init_image,
                 control_image=control_image,
-                strength=0.72,
+                strength=0.42,
                 num_inference_steps=steps,
-                guidance_scale=8.0,
+                guidance_scale=7.5,
                 controlnet_conditioning_scale=conditioning_scale,
                 generator=generator,
             )
