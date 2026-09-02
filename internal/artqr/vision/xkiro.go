@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -93,6 +94,48 @@ func describeRegion(p model.Placement) string {
 	return vertical + "-" + horizontal
 }
 
+func (a *XKiroVisionAnalyzer) getKeys() []string {
+	var keys []string
+	if a.APIKey != "" {
+		keys = append(keys, a.APIKey)
+	}
+	if envKey := os.Getenv("XKIRO_API_KEY"); envKey != "" {
+		keys = append(keys, envKey)
+	}
+	if envKeys := os.Getenv("UPSTREAM_API_KEYS"); envKeys != "" {
+		for _, p := range strings.Split(envKeys, ",") {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				keys = append(keys, p)
+			}
+		}
+	}
+	return keys
+}
+
+func (a *XKiroVisionAnalyzer) getBaseURL() string {
+	if a.BaseURL != "" {
+		return a.BaseURL
+	}
+	if u := os.Getenv("XKIRO_BASE_URL"); u != "" {
+		return strings.TrimRight(u, "/")
+	}
+	if u := os.Getenv("UPSTREAM_BASE_URL"); u != "" {
+		return strings.TrimRight(u, "/")
+	}
+	return "https://api.xkiro.com/v1"
+}
+
+func (a *XKiroVisionAnalyzer) getModel() string {
+	if a.Model != "" {
+		return a.Model
+	}
+	if m := os.Getenv("XKIRO_VISION_MODEL"); m != "" {
+		return m
+	}
+	return "deepseek/deepseek-v4-flash-vision-exp"
+}
+
 func (a *XKiroVisionAnalyzer) AnalyzeStyle(ctx context.Context, refImgBytes []byte, placement model.Placement) (*StyleAnalysisResult, error) {
 	if len(refImgBytes) == 0 {
 		return nil, errors.New("empty reference image")
@@ -111,7 +154,7 @@ The QR code is placed in the ` + regionName + ` area (normalized X: ` + fmt.Spri
 
 You must respond with ONLY a valid JSON object adhering strictly to this schema:
 {
-  "style": "string (e.g. post-impressionist oil painting, cyberpunk digital art, vintage botanical watercolor)",
+  "style": "string (e.g. post-impressionist oil painting, cyberpunk digital art, vintage military portrait)",
   "palette": ["color 1", "color 2", "color 3", "color 4"],
   "composition": {
     "main_subject": "string",
@@ -119,8 +162,8 @@ You must respond with ONLY a valid JSON object adhering strictly to this schema:
     "foreground": "string"
   },
   "geometry": ["feature 1", "feature 2"],
-  "lighting": "string (e.g. dramatic rim lighting, soft ambient glow)",
-  "texture": "string (e.g. thick impasto brush strokes, smooth matte paper)",
+  "lighting": "string (e.g. dramatic studio rim lighting, soft ambient glow)",
+  "texture": "string (e.g. thick wool fabric, metallic medals, smooth skin)",
   "brush_direction": "string",
   "contrast": "string",
   "qr_region_description": "string (description of the scene around the ` + regionName + ` region)",
@@ -131,7 +174,7 @@ You must respond with ONLY a valid JSON object adhering strictly to this schema:
 	userPrompt := "Analyze this reference image and provide the JSON style extraction for the " + regionName + " QR placement."
 
 	requestBody := map[string]any{
-		"model": a.Model,
+		"model": a.getModel(),
 		"messages": []map[string]any{
 			{
 				"role":    "system",
@@ -159,50 +202,77 @@ You must respond with ONLY a valid JSON object adhering strictly to this schema:
 		return nil, err
 	}
 
-	reqURL := a.BaseURL + "/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(payloadBytes))
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	if a.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+a.APIKey)
+	keys := a.getKeys()
+	if len(keys) == 0 {
+		return nil, errors.New("không tìm thấy UPSTREAM_API_KEYS trong cấu hình .env")
 	}
 
 	client := &http.Client{Timeout: 45 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("xKiro vision request error: %w", err)
+	var lastErr error
+
+	for _, key := range keys {
+		reqURL := a.getBaseURL() + "/chat/completions"
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(payloadBytes))
+		if reqErr != nil {
+			lastErr = reqErr
+			continue
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+key)
+
+		resp, doErr := client.Do(req)
+		if doErr != nil {
+			lastErr = doErr
+			continue
+		}
+
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("xKiro vision returned status %d: %s", resp.StatusCode, string(bodyBytes))
+			continue
+		}
+
+		var chatResp struct {
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			} `json:"choices"`
+		}
+
+		if unmarshalErr := json.Unmarshal(bodyBytes, &chatResp); unmarshalErr != nil {
+			lastErr = unmarshalErr
+			continue
+		}
+
+		if len(chatResp.Choices) == 0 || chatResp.Choices[0].Message.Content == "" {
+			lastErr = errors.New("empty response content from vision model")
+			continue
+		}
+
+		rawJSON := chatResp.Choices[0].Message.Content
+		rawJSON = strings.TrimSpace(rawJSON)
+		if strings.HasPrefix(rawJSON, "```json") {
+			rawJSON = strings.TrimPrefix(rawJSON, "```json")
+			rawJSON = strings.TrimSuffix(rawJSON, "```")
+			rawJSON = strings.TrimSpace(rawJSON)
+		} else if strings.HasPrefix(rawJSON, "```") {
+			rawJSON = strings.TrimPrefix(rawJSON, "```")
+			rawJSON = strings.TrimSuffix(rawJSON, "```")
+			rawJSON = strings.TrimSpace(rawJSON)
+		}
+
+		var result StyleAnalysisResult
+		if parseErr := json.Unmarshal([]byte(rawJSON), &result); parseErr != nil {
+			lastErr = parseErr
+			continue
+		}
+
+		return &result, nil
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("xKiro vision returned status %d", resp.StatusCode)
-	}
-
-	var chatResp struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil || len(chatResp.Choices) == 0 {
-		return nil, errors.New("invalid response from vision model")
-	}
-
-	rawContent := strings.TrimSpace(chatResp.Choices[0].Message.Content)
-	rawContent = strings.TrimPrefix(rawContent, "```json")
-	rawContent = strings.TrimPrefix(rawContent, "```")
-	rawContent = strings.TrimSuffix(rawContent, "```")
-	rawContent = strings.TrimSpace(rawContent)
-
-	var analysis StyleAnalysisResult
-	if err := json.Unmarshal([]byte(rawContent), &analysis); err != nil {
-		return nil, fmt.Errorf("failed to parse vision analysis JSON: %w (content: %s)", err, rawContent)
-	}
-
-	return &analysis, nil
+	return nil, lastErr
 }
