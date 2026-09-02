@@ -172,7 +172,7 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 	}
 
 	// Step C: Execution & Adaptive Retry Loop
-	targetOutputs := 4
+	targetOutputs := 1
 	for attempt := 1; attempt <= job.MaxAttempts; attempt++ {
 		job.IncrementAttempt()
 		needed := targetOutputs - len(job.Images)
