@@ -53,31 +53,32 @@ func (h *HuggingFaceProvider) generateGradio(ctx context.Context, req *Generatio
 		count = 4
 	}
 
+	qrControlBase64 := ""
+	if len(req.QRControlImagePNG) > 0 {
+		qrControlBase64 = base64.StdEncoding.EncodeToString(req.QRControlImagePNG)
+	}
+
 	refBase64 := ""
 	if len(req.ReferenceImageBytes) > 0 {
 		refBase64 = base64.StdEncoding.EncodeToString(req.ReferenceImageBytes)
 	}
 
-	px := req.Placement.X
-	py := req.Placement.Y
-	psize := req.Placement.Size
-	if psize <= 0 {
-		psize = 0.45
+	refStrength := req.ReferenceStrength
+	if refStrength <= 0 {
+		refStrength = 0.45
 	}
 
 	callPayload := map[string]any{
 		"data": []any{
-			req.Payload,
 			req.Prompt,
 			req.NegativePrompt,
+			qrControlBase64,
+			refBase64,
 			req.ConditioningScale,
+			refStrength,
 			req.Seed,
 			count,
 			25, // steps
-			refBase64,
-			px,
-			py,
-			psize,
 		},
 	}
 

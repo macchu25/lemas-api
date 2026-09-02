@@ -1,11 +1,9 @@
 import base64
 import io
 import random
-import math
 import os
 
 import gradio as gr
-import qrcode
 try:
     import spaces
     HAVE_SPACES = True
@@ -75,80 +73,61 @@ def gpu_worker(fn):
     return spaces.GPU(duration=120)(fn) if HAVE_SPACES else fn
 
 
-def build_qr_condition(payload: str, placement_x: float = 0.5, placement_y: float = 0.5, placement_size: float = 0.45, canvas_size: int = 1024) -> Image.Image:
-    qr = qrcode.QRCode(
-        error_correction=qrcode.constants.ERROR_CORRECT_H,
-        box_size=1,
-        border=4,
-    )
-    qr.add_data(payload, optimize=0)
-    qr.make(fit=True)
-    qr_image = qr.make_image(fill_color="black", back_color="white").convert("RGB")
-    
-    # Scale QR to placed dimension
-    qr_px = max(160, int(placement_size * canvas_size))
-    qr_resized = qr_image.resize((qr_px, qr_px), Image.Resampling.NEAREST)
-    
-    offset_x = int(placement_x * canvas_size)
-    offset_y = int(placement_y * canvas_size)
-    
-    if offset_x + qr_px > canvas_size:
-        offset_x = canvas_size - qr_px
-    if offset_y + qr_px > canvas_size:
-        offset_y = canvas_size - qr_px
-    if offset_x < 0:
-        offset_x = 0
-    if offset_y < 0:
-        offset_y = 0
-
-    # Full-canvas neutral gray control image (128,128,128 = no effect outside QR region)
-    condition = Image.new("RGB", (canvas_size, canvas_size), (128, 128, 128))
-    condition.paste(qr_resized, (offset_x, offset_y))
-    return condition
+def decode_base64_image(data: str) -> Image.Image | None:
+    if not data or len(data) < 20:
+        return None
+    try:
+        b64_str = data
+        if "," in b64_str:
+            b64_str = b64_str.split(",", 1)[1]
+        raw_bytes = base64.b64decode(b64_str)
+        return Image.open(io.BytesIO(raw_bytes)).convert("RGB")
+    except Exception as e:
+        print("Error decoding base64 image:", e)
+        return None
 
 
 @gpu_worker
 def generate(
-    payload: str,
     prompt: str,
     negative_prompt: str,
+    qr_control_image: str,
+    reference_image: str,
     conditioning_scale: float,
+    reference_strength: float,
     seed: int,
     num_outputs: int,
     steps: int,
-    ref_image_base64: str = "",
-    placement_x: float = 0.28,
-    placement_y: float = 0.28,
-    placement_size: float = 0.45,
 ):
-    if not payload:
-        raise gr.Error("QR payload is required")
     num_outputs = max(1, min(int(num_outputs), 4))
     steps = max(15, min(int(steps), 35))
-    conditioning_scale = max(0.8, min(float(conditioning_scale), 2.2))
+    conditioning_scale = max(0.4, min(float(conditioning_scale), 2.5))
+    reference_strength = max(0.2, min(float(reference_strength), 0.95))
     seed = int(seed) if int(seed) >= 0 else random.randint(0, 2**31 - 1)
+
+    # 1. Decode QR control image sent from Go backend
+    control_image = decode_base64_image(qr_control_image)
+    if control_image is None:
+        raise gr.Error("Valid qr_control_image is required from Go backend")
     
-    control_image = build_qr_condition(payload, float(placement_x), float(placement_y), float(placement_size), 1024)
+    # Standardize to 1024x1024
+    if control_image.size != (1024, 1024):
+        control_image = control_image.resize((1024, 1024), Image.Resampling.LANCZOS)
+
+    # 2. Decode reference style image if provided
+    init_image = decode_base64_image(reference_image)
+    if init_image is not None and init_image.size != (1024, 1024):
+        init_image = ImageOps.fit(init_image, (1024, 1024), Image.Resampling.LANCZOS)
 
     if not LOCAL_WORKER:
         pipe.to("cuda")
         img2img_pipe.to("cuda")
 
-    generators = [torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(seed + i) for i in range(num_outputs)]
+    generators = [
+        torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(seed + i)
+        for i in range(num_outputs)
+    ]
     images = []
-
-    # Decode base64 reference image if provided
-    init_image = None
-    if ref_image_base64 and len(ref_image_base64) > 20:
-        try:
-            b64_str = ref_image_base64
-            if "," in b64_str:
-                b64_str = b64_str.split(",", 1)[1]
-            raw_bytes = base64.b64decode(b64_str)
-            ref_pil = Image.open(io.BytesIO(raw_bytes))
-            init_image = ImageOps.fit(ref_pil.convert("RGB"), control_image.size, Image.Resampling.LANCZOS)
-        except Exception as e:
-            print("Error decoding ref_image_base64:", e)
 
     for generator in generators:
         if init_image is not None:
@@ -158,7 +137,7 @@ def generate(
                 negative_prompt=negative_prompt,
                 image=init_image,
                 control_image=control_image,
-                strength=0.42,
+                strength=reference_strength,
                 num_inference_steps=steps,
                 guidance_scale=7.5,
                 controlnet_conditioning_scale=conditioning_scale,
@@ -170,37 +149,44 @@ def generate(
                 negative_prompt=negative_prompt,
                 image=control_image,
                 num_inference_steps=steps,
-                guidance_scale=8.5,
+                guidance_scale=8.0,
                 controlnet_conditioning_scale=conditioning_scale,
                 generator=generator,
-                width=control_image.width,
-                height=control_image.height,
+                width=1024,
+                height=1024,
             )
 
+        # Raw diffusion candidate - no module painting overlay
         images.append(result.images[0])
     return images
 
 
 with gr.Blocks(title="Lemas Art QR Worker") as demo:
-    gr.Markdown("# Lemas Art QR · QR-ControlNet & Style Harmonization Worker")
-    with gr.Row():
-        payload_input = gr.Textbox(label="Decoded QR payload", lines=4)
-        output = gr.Gallery(label="Generated candidates", columns=2)
+    gr.Markdown("# Lemas Art QR · QR-ControlNet Worker")
     prompt_input = gr.Textbox(label="Prompt")
     negative_input = gr.Textbox(label="Negative prompt")
+    qr_ctrl_input = gr.Textbox(label="QR Control Image (Base64 from Go)", lines=3)
+    ref_image_input = gr.Textbox(label="Reference Image (Optional Base64)", lines=3)
     with gr.Row():
-        scale_input = gr.Slider(0.8, 2.2, value=1.35, step=0.05, label="QR conditioning")
+        scale_input = gr.Slider(0.4, 2.5, value=1.0, step=0.05, label="Conditioning Scale")
+        strength_input = gr.Slider(0.2, 0.95, value=0.45, step=0.05, label="Reference Strength")
         seed_input = gr.Number(value=-1, precision=0, label="Seed")
         count_input = gr.Slider(1, 4, value=1, step=1, label="Outputs")
         steps_input = gr.Slider(15, 35, value=25, step=1, label="Steps")
-    ref_image_input = gr.Textbox(label="Optional Base64 Reference Image", lines=2)
-    with gr.Row():
-        px_input = gr.Number(value=0.28, label="Placement X")
-        py_input = gr.Number(value=0.28, label="Placement Y")
-        psize_input = gr.Number(value=0.45, label="Placement Size")
+    output = gr.Gallery(label="Generated candidates", columns=2)
     gr.Button("Generate", variant="primary").click(
         generate,
-        inputs=[payload_input, prompt_input, negative_input, scale_input, seed_input, count_input, steps_input, ref_image_input, px_input, py_input, psize_input],
+        inputs=[
+            prompt_input,
+            negative_input,
+            qr_ctrl_input,
+            ref_image_input,
+            scale_input,
+            strength_input,
+            seed_input,
+            count_input,
+            steps_input,
+        ],
         outputs=output,
         api_name="generate",
     )

@@ -14,6 +14,7 @@ type GenerationRequest struct {
 	ReferenceImageBytes []byte
 	Placement           model.Placement
 	ConditioningScale   float64
+	ReferenceStrength   float64
 	GuidanceScale       float64
 	Seed                int
 	Width               int

@@ -2,9 +2,9 @@ package artqr
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand"
 	"strings"
 	"sync"
@@ -153,12 +153,9 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 		var err error
 		analysis, err = s.analyzer.AnalyzeStyle(ctx, job.ReferenceImageJPEG, job.Placement)
 		if err != nil {
-			// Non-blocking fallback if vision model is busy
-			analysis = &vision.StyleAnalysisResult{
-				Style:           "expressive modern artwork",
-				Palette:         []string{"cobalt", "emerald", "gold"},
-				GeneratedPrompt: "dynamic expressive artwork with rich textures and balanced contrasts",
-			}
+			log.Printf("[Vision Error] xKiro style analysis failed: %v", err)
+			job.SetError("Lỗi phân tích thị giác xKiro Vision: " + err.Error())
+			return
 		}
 	} else if job.PresetID != "" {
 		if p, ok := s.GetPreset(job.PresetID); ok {
@@ -178,13 +175,11 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 	job.Prompt = finalPrompt
 	job.NegativePrompt = negativePrompt
 
-	baseScale := 1.30
-	if preset != nil && preset.ConditioningScale > 0 {
-		baseScale = preset.ConditioningScale
-	}
-
-	// Step C: Execution & Adaptive Retry Loop
+	// Step C: Low-to-high conditioning search (0.70 -> 1.20)
+	conditioningScales := []float64{0.70, 0.80, 0.90, 1.00, 1.10, 1.20}
+	job.MaxAttempts = len(conditioningScales)
 	targetOutputs := 1
+
 	for attempt := 1; attempt <= job.MaxAttempts; attempt++ {
 		job.IncrementAttempt()
 		needed := targetOutputs - len(job.Images)
@@ -192,14 +187,17 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 			break
 		}
 
-		currentProgress := 30 + (attempt * 15)
-		if currentProgress > 85 {
-			currentProgress = 85
+		currentProgress := 25 + int(float64(attempt)/float64(job.MaxAttempts)*65)
+		if currentProgress > 90 {
+			currentProgress = 90
 		}
 		job.UpdateStatus("generating", currentProgress)
 
-		// Adaptive scale step
-		currentScale := baseScale + (float64(attempt-1) * 0.08)
+		scaleIdx := attempt - 1
+		if scaleIdx >= len(conditioningScales) {
+			scaleIdx = len(conditioningScales) - 1
+		}
+		currentScale := conditioningScales[scaleIdx]
 		seed := int(time.Now().UnixNano()&0x7fffffff) + rand.Intn(10000)
 
 		req := &provider.GenerationRequest{
@@ -210,6 +208,7 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 			ReferenceImageBytes: job.ReferenceImageJPEG,
 			Placement:           job.Placement,
 			ConditioningScale:   currentScale,
+			ReferenceStrength:   0.45,
 			GuidanceScale:       7.5,
 			Seed:                seed,
 			Width:               1024,
@@ -217,39 +216,28 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 			NumOutputs:          needed,
 		}
 
-		var outputBytes []byte
-		var outputURL string
-
-		if len(job.ReferenceImageJPEG) > 0 {
-			// 100% Bit-for-bit preservation of the original photo everywhere outside QR region
-			composited, compErr := qr.CompositeArtQRExact(job.ReferenceImageJPEG, job.OriginalPayload, job.SourceQRPNG, job.Placement, 1024, attempt)
-			if compErr == nil && len(composited) > 0 {
-				outputBytes = composited
-				outputURL = "data:image/png;base64," + base64.StdEncoding.EncodeToString(composited)
+		// Raw AI diffusion execution
+		candidates, err := s.provider.Generate(ctx, req)
+		if err != nil {
+			if attempt == job.MaxAttempts && len(job.Images) == 0 {
+				job.SetError("Không thể tạo ảnh từ AI Provider: " + err.Error())
+				return
 			}
-		} else {
-			candidates, err := s.provider.Generate(ctx, req)
-			if err != nil {
-				if attempt == job.MaxAttempts && len(job.Images) == 0 {
-					job.SetError("Không thể tạo ảnh từ AI Provider: " + err.Error())
-					return
-				}
-				continue
-			}
-			if len(candidates) > 0 {
-				outputBytes = candidates[0].PNGBytes
-				outputURL = candidates[0].URL
-			}
+			continue
 		}
 
-		if len(outputBytes) > 0 {
-			vResult := qr.ValidateGeneratedQR(outputBytes, job.OriginalPayload)
+		job.UpdateStatus("validating", currentProgress+3)
+
+		// Step D: Validate raw candidate diffusion output directly
+		// Flow: cand.PNGBytes -> ValidateGeneratedQR -> valid: return, invalid: retry with next conditioning scale
+		for _, cand := range candidates {
+			vResult := qr.ValidateGeneratedQR(cand.PNGBytes, job.OriginalPayload)
 			if vResult.Valid {
 				job.AddOutput(model.OutputImage{
-					URL:                outputURL,
+					URL:                cand.URL,
 					Verified:           true,
 					DecodedPayloadHash: vResult.PayloadHash,
-					Seed:               seed,
+					Seed:               cand.Seed,
 					ConditioningScale:  currentScale,
 				})
 			} else {
@@ -259,6 +247,10 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 			if len(job.Images) >= targetOutputs {
 				break
 			}
+		}
+
+		if len(job.Images) >= targetOutputs {
+			break
 		}
 	}
 
