@@ -95,13 +95,13 @@ func describeRegion(p model.Placement) string {
 }
 
 func (a *XKiroVisionAnalyzer) getKeys() []string {
-	var keys []string
+	if envKey := strings.TrimSpace(os.Getenv("XKIRO_API_KEY")); envKey != "" {
+		return []string{envKey}
+	}
 	if a.APIKey != "" {
-		keys = append(keys, a.APIKey)
+		return []string{a.APIKey}
 	}
-	if envKey := os.Getenv("XKIRO_API_KEY"); envKey != "" {
-		keys = append(keys, envKey)
-	}
+	var keys []string
 	if envKeys := os.Getenv("UPSTREAM_API_KEYS"); envKeys != "" {
 		for _, p := range strings.Split(envKeys, ",") {
 			p = strings.TrimSpace(p)
@@ -114,26 +114,26 @@ func (a *XKiroVisionAnalyzer) getKeys() []string {
 }
 
 func (a *XKiroVisionAnalyzer) getBaseURL() string {
-	if a.BaseURL != "" {
+	if u := strings.TrimSpace(os.Getenv("XKIRO_BASE_URL")); u != "" {
+		return strings.TrimRight(u, "/")
+	}
+	if a.BaseURL != "" && a.BaseURL != "https://api.xkiro.com/v1" {
 		return a.BaseURL
 	}
-	if u := os.Getenv("XKIRO_BASE_URL"); u != "" {
+	if u := strings.TrimSpace(os.Getenv("UPSTREAM_BASE_URL")); u != "" {
 		return strings.TrimRight(u, "/")
 	}
-	if u := os.Getenv("UPSTREAM_BASE_URL"); u != "" {
-		return strings.TrimRight(u, "/")
-	}
-	return "https://api.xkiro.com/v1"
+	return "https://apigiare.vn/v1"
 }
 
 func (a *XKiroVisionAnalyzer) getModel() string {
-	if a.Model != "" {
-		return a.Model
-	}
-	if m := os.Getenv("XKIRO_VISION_MODEL"); m != "" {
+	if m := strings.TrimSpace(os.Getenv("XKIRO_VISION_MODEL")); m != "" {
 		return m
 	}
-	return "deepseek/deepseek-v4-flash-vision-exp"
+	if a.Model != "" && a.Model != "deepseek/deepseek-v4-flash-vision-exp" {
+		return a.Model
+	}
+	return "gpt-4o"
 }
 
 func (a *XKiroVisionAnalyzer) AnalyzeStyle(ctx context.Context, refImgBytes []byte, placement model.Placement) (*StyleAnalysisResult, error) {
