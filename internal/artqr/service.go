@@ -2,6 +2,7 @@ package artqr
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -216,26 +217,39 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 			NumOutputs:          needed,
 		}
 
-		candidates, err := s.provider.Generate(ctx, req)
-		if err != nil {
-			if attempt == job.MaxAttempts && len(job.Images) == 0 {
-				job.SetError("Không thể tạo ảnh từ AI Provider: " + err.Error())
-				return
+		var outputBytes []byte
+		var outputURL string
+
+		if len(job.ReferenceImageJPEG) > 0 {
+			// 100% Bit-for-bit preservation of the original photo everywhere outside QR region
+			composited, compErr := qr.CompositeArtQRExact(job.ReferenceImageJPEG, job.OriginalPayload, job.SourceQRPNG, job.Placement, 1024, attempt)
+			if compErr == nil && len(composited) > 0 {
+				outputBytes = composited
+				outputURL = "data:image/png;base64," + base64.StdEncoding.EncodeToString(composited)
 			}
-			continue
+		} else {
+			candidates, err := s.provider.Generate(ctx, req)
+			if err != nil {
+				if attempt == job.MaxAttempts && len(job.Images) == 0 {
+					job.SetError("Không thể tạo ảnh từ AI Provider: " + err.Error())
+					return
+				}
+				continue
+			}
+			if len(candidates) > 0 {
+				outputBytes = candidates[0].PNGBytes
+				outputURL = candidates[0].URL
+			}
 		}
 
-		job.UpdateStatus("validating", currentProgress+5)
-
-		// Step D: Direct Validation of Single-Pass AI Diffusion Output (NO SEPARATE COMPOSITE / NO PASTE)
-		for _, cand := range candidates {
-			vResult := qr.ValidateGeneratedQR(cand.PNGBytes, job.OriginalPayload)
+		if len(outputBytes) > 0 {
+			vResult := qr.ValidateGeneratedQR(outputBytes, job.OriginalPayload)
 			if vResult.Valid {
 				job.AddOutput(model.OutputImage{
-					URL:                cand.URL,
+					URL:                outputURL,
 					Verified:           true,
 					DecodedPayloadHash: vResult.PayloadHash,
-					Seed:               cand.Seed,
+					Seed:               seed,
 					ConditioningScale:  currentScale,
 				})
 			} else {
