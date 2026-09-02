@@ -275,8 +275,9 @@ func runArtQRJob(job *artQRJob) {
 		for _, rawURL := range urls {
 			valid := validateArtQR(ctx, rawURL, job.Payload)
 			job.mu.Lock()
-			job.Results = append(job.Results, artQRResult{URL: rawURL, Scannable: true})
-			if !valid {
+			if valid {
+				job.Results = append(job.Results, artQRResult{URL: rawURL, Scannable: true})
+			} else {
 				job.Rejected++
 			}
 			job.mu.Unlock()
@@ -287,7 +288,7 @@ func runArtQRJob(job *artQRJob) {
 	if len(job.Results) > 0 {
 		job.Status = "completed"
 	} else {
-		job.Status, job.Error = "failed", "Không thể kết nối đến Hugging Face Space. Vui lòng kiểm tra lại Space hoặc thử lại sau."
+		job.Status, job.Error = "failed", "Không có ảnh nào giải mã đúng QR gốc sau các lần thử."
 	}
 }
 

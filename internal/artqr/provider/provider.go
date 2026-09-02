@@ -5,6 +5,7 @@ import (
 )
 
 type GenerationRequest struct {
+	Payload           string
 	Prompt            string
 	NegativePrompt    string
 	QRControlImagePNG []byte

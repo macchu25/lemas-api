@@ -190,6 +190,7 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 		seed := int(time.Now().UnixNano()&0x7fffffff) + rand.Intn(10000)
 
 		req := &provider.GenerationRequest{
+			Payload:           job.OriginalPayload,
 			Prompt:            finalPrompt,
 			NegativePrompt:    negativePrompt,
 			QRControlImagePNG: job.ControlCanvasPNG,
@@ -227,16 +228,7 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 				})
 			} else {
 				job.IncrementRejected()
-				// Include high-contrast fallback candidate if verified threshold met
-				if len(cand.URL) > 0 {
-					job.AddOutput(model.OutputImage{
-						URL:                cand.URL,
-						Verified:           true,
-						DecodedPayloadHash: vResult.PayloadHash,
-						Seed:               cand.Seed,
-						ConditioningScale:  currentScale,
-					})
-				}
+
 			}
 
 			if len(job.Images) >= targetOutputs {

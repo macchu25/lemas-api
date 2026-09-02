@@ -6,7 +6,6 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
-	"strings"
 
 	"github.com/makiuchi-d/gozxing"
 	"github.com/makiuchi-d/gozxing/qrcode"
@@ -44,8 +43,8 @@ func ValidateGeneratedQR(imgBytes []byte, expectedPayload string) ValidationResu
 		return ValidationResult{Valid: false, Error: "qr not recognized by decoder"}
 	}
 
-	decoded := strings.TrimSpace(result.GetText())
-	expected := strings.TrimSpace(expectedPayload)
+	decoded := result.GetText()
+	expected := expectedPayload
 
 	if decoded == expected {
 		return ValidationResult{

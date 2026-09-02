@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -35,55 +34,17 @@ func (h *HuggingFaceProvider) Name() string {
 }
 
 func (h *HuggingFaceProvider) Generate(ctx context.Context, req *GenerationRequest) ([]GeneratedImage, error) {
-	if h.BaseURL != "" {
-		images, err := h.generateGradio(ctx, req)
-		if err == nil && len(images) > 0 {
-			return images, nil
-		}
+	if h.BaseURL == "" {
+		return nil, errors.New("HF_ART_QR_SPACE_URL is not configured")
 	}
-
-	// Resilient Edge Generation Fallback (FLUX with Seed Variation)
-	return h.generateEdgeFallback(ctx, req)
+	if req.Payload == "" {
+		return nil, errors.New("QR payload is required")
+	}
+	return h.generateGradio(ctx, req)
 }
 
 func (h *HuggingFaceProvider) generateGradio(ctx context.Context, req *GenerationRequest) ([]GeneratedImage, error) {
-	// 1. Upload QR Control Image to Gradio
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	part, err := writer.CreateFormFile("files", "control_qr.png")
-	if err != nil {
-		return nil, err
-	}
-	if _, err := part.Write(req.QRControlImagePNG); err != nil {
-		return nil, err
-	}
-	_ = writer.Close()
-
-	uploadReq, err := http.NewRequestWithContext(ctx, http.MethodPost, h.BaseURL+"/gradio_api/upload", &body)
-	if err != nil {
-		return nil, err
-	}
-	uploadReq.Header.Set("Content-Type", writer.FormDataContentType())
-	if h.Token != "" {
-		uploadReq.Header.Set("Authorization", "Bearer "+h.Token)
-	}
-
 	httpClient := &http.Client{Timeout: 45 * time.Second}
-	resp, err := httpClient.Do(uploadReq)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("gradio upload status %d", resp.StatusCode)
-	}
-
-	var paths []string
-	if err := json.NewDecoder(resp.Body).Decode(&paths); err != nil || len(paths) == 0 {
-		return nil, errors.New("gradio returned no uploaded file path")
-	}
-
 	// 2. Submit generation call
 	count := req.NumOutputs
 	if count <= 0 {
@@ -92,19 +53,18 @@ func (h *HuggingFaceProvider) generateGradio(ctx context.Context, req *Generatio
 
 	callPayload := map[string]any{
 		"data": []any{
-			map[string]any{"path": paths[0], "meta": map[string]string{"_type": "gradio.FileData"}},
+			req.Payload,
 			req.Prompt,
 			req.NegativePrompt,
 			req.ConditioningScale,
-			req.GuidanceScale,
-			28, // steps
 			req.Seed,
 			count,
+			25, // steps
 		},
 	}
 
 	callBytes, _ := json.Marshal(callPayload)
-	callReq, err := http.NewRequestWithContext(ctx, http.MethodPost, h.BaseURL+"/gradio_api/call/predict", bytes.NewReader(callBytes))
+	callReq, err := http.NewRequestWithContext(ctx, http.MethodPost, h.BaseURL+"/gradio_api/call/generate", bytes.NewReader(callBytes))
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +95,7 @@ func (h *HuggingFaceProvider) generateGradio(ctx context.Context, req *Generatio
 }
 
 func (h *HuggingFaceProvider) waitEvent(ctx context.Context, eventID string) ([]GeneratedImage, error) {
-	streamReq, err := http.NewRequestWithContext(ctx, http.MethodGet, h.BaseURL+"/gradio_api/call/predict/"+eventID, nil)
+	streamReq, err := http.NewRequestWithContext(ctx, http.MethodGet, h.BaseURL+"/gradio_api/call/generate/"+eventID, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -149,6 +109,9 @@ func (h *HuggingFaceProvider) waitEvent(ctx context.Context, eventID string) ([]
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HF event returned HTTP %d", resp.StatusCode)
+	}
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 8<<20)
@@ -179,13 +142,19 @@ func (h *HuggingFaceProvider) waitEvent(ctx context.Context, eventID string) ([]
 		}
 	}
 
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
 	if len(urls) == 0 {
 		return nil, errors.New("no image URLs in gradio event completion")
 	}
 
 	var results []GeneratedImage
 	for idx, u := range urls {
-		imgBytes, _ := downloadImage(ctx, u)
+		imgBytes, err := h.downloadImage(ctx, u)
+		if err != nil {
+			return nil, err
+		}
 		results = append(results, GeneratedImage{
 			URL:      u,
 			PNGBytes: imgBytes,
@@ -196,64 +165,43 @@ func (h *HuggingFaceProvider) waitEvent(ctx context.Context, eventID string) ([]
 	return results, nil
 }
 
-func (h *HuggingFaceProvider) generateEdgeFallback(ctx context.Context, req *GenerationRequest) ([]GeneratedImage, error) {
-	count := req.NumOutputs
-	if count <= 0 {
-		count = 4
+func (h *HuggingFaceProvider) downloadImage(ctx context.Context, targetURL string) ([]byte, error) {
+	base, err := url.Parse(h.BaseURL)
+	if err != nil {
+		return nil, err
 	}
-
-	var results []GeneratedImage
-	client := &http.Client{Timeout: 25 * time.Second}
-
-	for i := 0; i < count; i++ {
-		seed := req.Seed + i*777
-		encodedPrompt := url.QueryEscape(req.Prompt)
-		targetURL := fmt.Sprintf("https://image.pollinations.ai/prompt/%s?width=%d&height=%d&seed=%d&nologo=true&model=flux",
-			encodedPrompt, req.Width, req.Height, seed)
-
-		fetchReq, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
-		if err != nil {
-			continue
-		}
-		resp, err := client.Do(fetchReq)
-		if err != nil || resp.StatusCode != http.StatusOK {
-			if resp != nil {
-				resp.Body.Close()
-			}
-			continue
-		}
-
-		imgBytes, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
-		resp.Body.Close()
-		if err != nil || len(imgBytes) == 0 {
-			continue
-		}
-
-		results = append(results, GeneratedImage{
-			URL:      targetURL,
-			PNGBytes: imgBytes,
-			Seed:     seed,
-		})
+	target, err := url.Parse(targetURL)
+	if err != nil {
+		return nil, err
 	}
-
-	if len(results) == 0 {
-		return nil, errors.New("failed to generate candidates from edge generator")
+	// Never send the HF token to a URL supplied by another host.
+	if target.Scheme != base.Scheme || target.Host != base.Host {
+		return nil, errors.New("generated image URL is outside the configured Space")
 	}
-
-	return results, nil
-}
-
-func downloadImage(ctx context.Context, targetURL string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if h.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+h.Token)
+	}
+	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	return io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("generated image returned HTTP %d", resp.StatusCode)
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, (10<<20)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 || len(raw) > 10<<20 {
+		return nil, errors.New("generated image size is invalid")
+	}
+	return raw, nil
 }
 
 func extractURLs(val any) []string {

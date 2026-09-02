@@ -11,7 +11,6 @@ import (
 	_ "image/jpeg"
 	"image/png"
 	"io"
-	"strings"
 
 	"github.com/makiuchi-d/gozxing"
 	"github.com/makiuchi-d/gozxing/qrcode"
@@ -26,7 +25,7 @@ type DecodedQR struct {
 }
 
 func HashPayload(payload string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(payload)))
+	sum := sha256.Sum256([]byte(payload))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -64,9 +63,9 @@ func DecodeQRCode(raw []byte) (*DecodedQR, error) {
 		payload = tryDecodeImage(invImg)
 	}
 
-	// If still not recognized as standard text, use hash of image data as payload fallback
+	// Never invent a payload when the original QR cannot be read.
 	if payload == "" {
-		payload = "LEMAS_QR_" + HashPayload(string(raw))[:12]
+		return nil, errors.New("không đọc được QR gốc; vui lòng tải ảnh QR rõ hơn")
 	}
 
 	var normalized bytes.Buffer
@@ -95,7 +94,7 @@ func tryDecodeImage(img image.Image) string {
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(result.GetText())
+	return result.GetText()
 }
 
 func toHighContrastGrayscale(src image.Image, threshold uint8) image.Image {
