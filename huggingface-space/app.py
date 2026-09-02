@@ -1,9 +1,12 @@
 import random
 import math
+import os
 
 import gradio as gr
 import qrcode
-import spaces
+LOCAL_WORKER = os.getenv("ART_QR_LOCAL") == "1"
+if not LOCAL_WORKER:
+    import spaces
 import torch
 from diffusers import ControlNetModel, StableDiffusionControlNetPipeline, UniPCMultistepScheduler
 from PIL import Image
@@ -16,16 +19,26 @@ controlnet = ControlNetModel.from_pretrained(
     CONTROLNET_MODEL,
     subfolder="v2",
     torch_dtype=torch.float16,
+    use_safetensors=True,
 )
 pipe = StableDiffusionControlNetPipeline.from_pretrained(
     BASE_MODEL,
     controlnet=controlnet,
     torch_dtype=torch.float16,
+    use_safetensors=True,
+    variant="fp16" if LOCAL_WORKER else None,
     safety_checker=None,
     requires_safety_checker=False,
 )
 pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
 pipe.enable_attention_slicing()
+if LOCAL_WORKER:
+    pipe.enable_model_cpu_offload()
+    pipe.enable_vae_slicing()
+
+
+def gpu_worker(fn):
+    return fn if LOCAL_WORKER else spaces.GPU(duration=120)(fn)
 
 
 def build_qr_condition(payload: str) -> tuple[Image.Image, Image.Image, Image.Image]:
@@ -98,7 +111,7 @@ def correct_modules(
     return Image.composite(protected, corrected, functional)
 
 
-@spaces.GPU(duration=120)
+@gpu_worker
 def generate(
     payload: str,
     prompt: str,
@@ -115,7 +128,8 @@ def generate(
     conditioning_scale = max(0.8, min(float(conditioning_scale), 2.2))
     seed = int(seed) if int(seed) >= 0 else random.randint(0, 2**31 - 1)
     control_image, qr_region, functional_region = build_qr_condition(payload)
-    pipe.to("cuda")
+    if not LOCAL_WORKER:
+        pipe.to("cuda")
     generators = [torch.Generator(device="cuda").manual_seed(seed + i) for i in range(num_outputs)]
     images = []
     correction_levels = [0.25, 0.45, 0.65, 0.85]
@@ -165,4 +179,8 @@ with gr.Blocks(title="Lemas Art QR Worker") as demo:
 
 
 if __name__ == "__main__":
-    demo.queue(default_concurrency_limit=2).launch()
+    demo.queue(default_concurrency_limit=1 if LOCAL_WORKER else 2).launch(
+        server_name="127.0.0.1" if LOCAL_WORKER else "0.0.0.0",
+        server_port=7860,
+        share=False,
+    )

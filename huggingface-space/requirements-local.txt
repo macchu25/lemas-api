@@ -1,0 +1,9 @@
+# Install torch CUDA separately following the local setup instructions.
+diffusers==0.35.1
+transformers==4.56.2
+accelerate==1.10.1
+safetensors>=0.6.2
+gradio>=5.49.1,<6
+Pillow>=11.0.0
+qrcode>=8.2
+zxing-cpp>=2.3
