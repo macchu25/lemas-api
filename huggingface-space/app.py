@@ -31,10 +31,16 @@ pipe = StableDiffusionControlNetPipeline.from_pretrained(
     requires_safety_checker=False,
 )
 pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
-pipe.enable_attention_slicing()
-if LOCAL_WORKER:
-    pipe.enable_model_cpu_offload()
+
+if torch.cuda.is_available():
+    pipe.to("cuda")
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
     pipe.enable_vae_slicing()
+else:
+    pipe.enable_model_cpu_offload()
+    pipe.enable_attention_slicing()
 
 
 def gpu_worker(fn):
