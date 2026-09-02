@@ -18,16 +18,18 @@ import (
 
 type StyleAnalysisResult struct {
 	Style               string         `json:"style"`
+	SubjectDetails      map[string]any `json:"subject_details,omitempty"`
 	Palette             []string       `json:"palette"`
-	Composition         map[string]any `json:"composition"`
-	Geometry            []string       `json:"geometry"`
+	Composition         map[string]any `json:"composition,omitempty"`
 	Lighting            string         `json:"lighting"`
 	Texture             string         `json:"texture"`
-	BrushDirection      string         `json:"brush_direction"`
-	Contrast            string         `json:"contrast"`
-	QRRegionDescription string         `json:"qr_region_description"`
-	IntegrationStrategy []string       `json:"integration_strategy"`
+	Contrast            string         `json:"contrast,omitempty"`
+	QRRegionAnalysis    map[string]any `json:"qr_region_analysis,omitempty"`
+	QRRegionDescription string         `json:"qr_region_description,omitempty"`
+	IntegrationStrategy []string       `json:"integration_strategy,omitempty"`
+	PatchPrompt         string         `json:"patch_prompt,omitempty"`
 	GeneratedPrompt     string         `json:"generated_prompt"`
+	RawJSON             string         `json:"raw_json,omitempty"`
 }
 
 type StyleAnalyzer interface {
@@ -45,21 +47,11 @@ func NewXKiroVisionAnalyzer() *XKiroVisionAnalyzer {
 	if baseURL == "" {
 		baseURL = strings.TrimRight(os.Getenv("UPSTREAM_BASE_URL"), "/")
 	}
-	if baseURL == "" {
-		baseURL = "https://api.xkiro.com/v1"
-	}
-	modelName := os.Getenv("XKIRO_VISION_MODEL")
+	apiKey := strings.TrimSpace(os.Getenv("XKIRO_API_KEY"))
+	modelName := strings.TrimSpace(os.Getenv("XKIRO_VISION_MODEL"))
 	if modelName == "" {
-		modelName = "deepseek/deepseek-v4-flash-vision-exp"
+		modelName = "gpt-4o"
 	}
-	apiKey := os.Getenv("XKIRO_API_KEY")
-	if apiKey == "" {
-		keys := strings.Split(os.Getenv("UPSTREAM_API_KEYS"), ",")
-		if len(keys) > 0 && strings.TrimSpace(keys[0]) != "" {
-			apiKey = strings.TrimSpace(keys[0])
-		}
-	}
-
 	return &XKiroVisionAnalyzer{
 		BaseURL: baseURL,
 		APIKey:  apiKey,
@@ -95,18 +87,18 @@ func describeRegion(p model.Placement) string {
 }
 
 func (a *XKiroVisionAnalyzer) getKeys() []string {
-	if envKey := strings.TrimSpace(os.Getenv("XKIRO_API_KEY")); envKey != "" {
-		return []string{envKey}
-	}
-	if a.APIKey != "" {
-		return []string{a.APIKey}
-	}
 	var keys []string
-	if envKeys := os.Getenv("UPSTREAM_API_KEYS"); envKeys != "" {
-		for _, p := range strings.Split(envKeys, ",") {
-			p = strings.TrimSpace(p)
-			if p != "" {
-				keys = append(keys, p)
+	if a.APIKey != "" {
+		keys = append(keys, a.APIKey)
+	}
+	if envKey := strings.TrimSpace(os.Getenv("XKIRO_API_KEY")); envKey != "" {
+		keys = append(keys, envKey)
+	}
+	if raw := os.Getenv("UPSTREAM_API_KEYS"); raw != "" {
+		for _, k := range strings.Split(raw, ",") {
+			k = strings.TrimSpace(k)
+			if k != "" {
+				keys = append(keys, k)
 			}
 		}
 	}
@@ -148,27 +140,39 @@ func (a *XKiroVisionAnalyzer) AnalyzeStyle(ctx context.Context, refImgBytes []by
 		mimeType = "image/jpeg"
 	}
 
-	systemInstruction := `You are an expert art director and ControlNet prompt engineer.
-Analyze the provided reference artwork to extract its visual DNA and design a seamless Art QR integration.
-The QR code is placed in the ` + regionName + ` area (normalized X: ` + fmt.Sprintf("%.2f", placement.X) + `, Y: ` + fmt.Sprintf("%.2f", placement.Y) + `, Size: ` + fmt.Sprintf("%.2f", placement.Size) + `).
+	systemInstruction := `You are an expert art director, forensic visual AI, and ControlNet QR prompt engineer.
+Analyze the provided artwork in exhaustive forensic detail and construct a precision JSON breakdown for seamless ControlNet QR embedding.
+The QR placement target is in the ` + regionName + ` region (normalized coordinates: X=` + fmt.Sprintf("%.2f", placement.X) + `, Y=` + fmt.Sprintf("%.2f", placement.Y) + `, Size=` + fmt.Sprintf("%.2f", placement.Size) + `).
 
-You must respond with ONLY a valid JSON object adhering strictly to this schema:
+Respond with a strictly formatted, rich JSON object with this exact schema:
 {
-  "style": "string (e.g. post-impressionist oil painting, cyberpunk digital art, vintage military portrait)",
-  "palette": ["color 1", "color 2", "color 3", "color 4"],
-  "composition": {
-    "main_subject": "string",
-    "background": "string",
-    "foreground": "string"
+  "style": "Exact artistic genre, historical medium (e.g. 19th Century Royal Military Oil Portrait, Impasto canvas, Baroque Chiaroscuro)",
+  "subject_details": {
+    "identity": "Exhaustive description of subject, facial structure, gaze, haircut, costume, uniform collars, shoulder epaulets, cords, medals, ribbons",
+    "wardrobe_material": "Detailed fabric types (heavy velvet, gold bullion embroidery, braided aguillette, silk sash, metallic badges)",
+    "color_scheme": "Color accents (navy blue, crimson scarlet, burnished gold, antique bronze)"
   },
-  "geometry": ["feature 1", "feature 2"],
-  "lighting": "string (e.g. dramatic studio rim lighting, soft ambient glow)",
-  "texture": "string (e.g. thick wool fabric, metallic medals, smooth skin)",
-  "brush_direction": "string",
-  "contrast": "string",
-  "qr_region_description": "string (description of the scene around the ` + regionName + ` region)",
-  "integration_strategy": ["actionable rule 1 for disguising QR modules with artwork textures", "actionable rule 2"],
-  "generated_prompt": "string (a rich, evocative 50-80 word prompt describing the scene and integrating QR modules naturally into elements of the art, high aesthetic, no watermarks, no separate QR card)"
+  "palette": ["#hex1", "#hex2", "#hex3", "#hex4", "#hex5"],
+  "composition": {
+    "main_subject": "Position, framing, and focal points",
+    "background": "Atmospheric background, vignette lighting, dark textured canvas",
+    "foreground": "Details of foreground clothing and adornments"
+  },
+  "lighting": "Precise lighting direction, key light, warm ambient bounce, rim light highlights on metallic epaulets and soft facial shadows",
+  "texture": "Visible brushwork, canvas weave, fabric stitching, metallic reflections, skin pores",
+  "contrast": "Luminance ratio between highlights and deep shadows",
+  "qr_region_analysis": {
+    "target_surface": "Exact physical area where QR is placed (e.g. embroidered navy jacket chest with diagonal sash)",
+    "local_textures": "Texture features in this specific crop (gold rope braids, medal ribbons, velvet folds)",
+    "camouflage_technique": "How to weave QR modules naturally into fabric folds, golden embroidery threads, and chiaroscuro shadows"
+  },
+  "integration_strategy": [
+    "Carve dark QR finder eyes and modules into the deep shadows of the fabric folds and navy cloth",
+    "Transform light QR modules into shimmering gold thread highlights and reflection points",
+    "Blend QR borders naturally along the curves of the cords and ribbons"
+  ],
+  "patch_prompt": "Intricate gold bullion embroidery, military uniform woven fabric texture, heavy navy cloth with gold threads and crimson sash, dramatic studio lighting, sharp contrasting weave, highly detailed masterwork craft",
+  "generated_prompt": "Masterpiece portrait preserving the exact subject, posture, gold braided military uniform, and atmospheric lighting of the artwork with the QR code seamlessly woven into the embroidery and shadows"
 }`
 
 	userPrompt := "Analyze this reference image and provide the JSON style extraction for the " + regionName + " QR placement."

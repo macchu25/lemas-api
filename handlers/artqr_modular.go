@@ -172,12 +172,18 @@ func AnalyzeStyleHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"style":       result.Style,
-		"palette":     result.Palette,
-		"lighting":    result.Lighting,
-		"texture":     result.Texture,
-		"prompt":      result.GeneratedPrompt,
-		"composition": result.Composition,
+		"style":                result.Style,
+		"palette":              result.Palette,
+		"subject_details":      result.SubjectDetails,
+		"composition":          result.Composition,
+		"lighting":             result.Lighting,
+		"texture":              result.Texture,
+		"contrast":             result.Contrast,
+		"qr_region_analysis":   result.QRRegionAnalysis,
+		"integration_strategy": result.IntegrationStrategy,
+		"patch_prompt":         result.PatchPrompt,
+		"prompt":               result.GeneratedPrompt,
+		"raw_json":             result.RawJSON,
 	})
 }
 
