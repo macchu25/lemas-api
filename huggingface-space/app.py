@@ -1,3 +1,5 @@
+import base64
+import io
 import random
 import math
 import os
@@ -112,7 +114,7 @@ def generate(
     seed: int,
     num_outputs: int,
     steps: int,
-    ref_image: Image.Image | None = None,
+    ref_image_base64: str = "",
     placement_x: float = 0.28,
     placement_y: float = 0.28,
     placement_size: float = 0.45,
@@ -133,10 +135,18 @@ def generate(
     generators = [torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(seed + i) for i in range(num_outputs)]
     images = []
 
-    # Scale reference image to 1024x1024 for full-canvas single-pass diffusion
+    # Decode base64 reference image if provided
     init_image = None
-    if ref_image is not None:
-        init_image = ImageOps.fit(ref_image.convert("RGB"), control_image.size, Image.Resampling.LANCZOS)
+    if ref_image_base64 and len(ref_image_base64) > 20:
+        try:
+            b64_str = ref_image_base64
+            if "," in b64_str:
+                b64_str = b64_str.split(",", 1)[1]
+            raw_bytes = base64.b64decode(b64_str)
+            ref_pil = Image.open(io.BytesIO(raw_bytes))
+            init_image = ImageOps.fit(ref_pil.convert("RGB"), control_image.size, Image.Resampling.LANCZOS)
+        except Exception as e:
+            print("Error decoding ref_image_base64:", e)
 
     for generator in generators:
         if init_image is not None:
@@ -146,7 +156,7 @@ def generate(
                 negative_prompt=negative_prompt,
                 image=init_image,
                 control_image=control_image,
-                strength=0.74,
+                strength=0.72,
                 num_inference_steps=steps,
                 guidance_scale=8.0,
                 controlnet_conditioning_scale=conditioning_scale,
@@ -181,7 +191,7 @@ with gr.Blocks(title="Lemas Art QR Worker") as demo:
         seed_input = gr.Number(value=-1, precision=0, label="Seed")
         count_input = gr.Slider(1, 4, value=1, step=1, label="Outputs")
         steps_input = gr.Slider(15, 35, value=25, step=1, label="Steps")
-    ref_image_input = gr.Image(label="Optional Reference Style Image", type="pil")
+    ref_image_input = gr.Textbox(label="Optional Base64 Reference Image", lines=2)
     with gr.Row():
         px_input = gr.Number(value=0.28, label="Placement X")
         py_input = gr.Number(value=0.28, label="Placement Y")

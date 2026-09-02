@@ -53,12 +53,9 @@ func (h *HuggingFaceProvider) generateGradio(ctx context.Context, req *Generatio
 		count = 4
 	}
 
-	var refData any = nil
+	refBase64 := ""
 	if len(req.ReferenceImageBytes) > 0 {
-		refData = map[string]any{
-			"path": fmt.Sprintf("data:image/jpeg;base64,%s", base64.StdEncoding.EncodeToString(req.ReferenceImageBytes)),
-			"meta": map[string]string{"_type": "gradio.FileData"},
-		}
+		refBase64 = base64.StdEncoding.EncodeToString(req.ReferenceImageBytes)
 	}
 
 	px := req.Placement.X
@@ -77,7 +74,7 @@ func (h *HuggingFaceProvider) generateGradio(ctx context.Context, req *Generatio
 			req.Seed,
 			count,
 			25, // steps
-			refData,
+			refBase64,
 			px,
 			py,
 			psize,
