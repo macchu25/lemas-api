@@ -174,10 +174,19 @@ func CompositeArtQRExact(artBytes []byte, payload string, qrPNG []byte, placemen
 	moduleCount := len(matrix)
 	modSize := float64(pSize) / float64(moduleCount)
 
-	// 4. Render Seamless QR without Any White Rectangular Card
+	// 4. Render Pure Organic Fluid Brushstrokes - ZERO White Box, ZERO Gray Grid
 	for r := 0; r < moduleCount; r++ {
 		for c := 0; c < moduleCount; c++ {
-			isDark := matrix[r][c]
+			if !matrix[r][c] {
+				// LIGHT MODULE: LEAVE 100% UNTOUCHED (The natural fabric/skin/artwork IS the light module)
+				continue
+			}
+
+			// Check adjacent neighbors to create continuous flowing brushstrokes
+			hasTop := r > 0 && matrix[r-1][c]
+			hasBottom := r < moduleCount-1 && matrix[r+1][c]
+			hasLeft := c > 0 && matrix[r][c-1]
+			hasRight := c < moduleCount-1 && matrix[r][c+1]
 
 			// Finder Pattern corner zones (7x7 modules)
 			isFinderTL := r < 8 && c < 8
@@ -187,12 +196,12 @@ func CompositeArtQRExact(artBytes []byte, payload string, qrPNG []byte, placemen
 
 			centerX := float64(px) + (float64(c)+0.5)*modSize
 			centerY := float64(py) + (float64(r)+0.5)*modSize
-			radius := modSize * 0.49
+			radius := modSize * 0.52
 
-			minX := int(centerX - modSize*0.5)
-			maxX := int(centerX + modSize*0.5)
-			minY := int(centerY - modSize*0.5)
-			maxY := int(centerY + modSize*0.5)
+			minX := int(centerX - modSize*0.65)
+			maxX := int(centerX + modSize*0.65)
+			minY := int(centerY - modSize*0.65)
+			maxY := int(centerY + modSize*0.65)
 
 			for destY := minY; destY <= maxY; destY++ {
 				for destX := minX; destX <= maxX; destX++ {
@@ -204,57 +213,64 @@ func CompositeArtQRExact(artBytes []byte, payload string, qrPNG []byte, placemen
 					dy := float64(destY) - centerY
 					dist := math.Hypot(dx, dy)
 
+					// Distance-based organic intensity with neighbor bridge connection
+					daub := 0.0
+					if dist <= radius {
+						daub = 1.0 - (dist / radius)
+					}
+
+					// Connect horizontal/vertical strokes seamlessly
+					if hasLeft && dx < 0 && math.Abs(dy) <= modSize*0.48 {
+						hDaub := 1.0 - (math.Abs(dy) / (modSize * 0.48))
+						if hDaub > daub {
+							daub = hDaub
+						}
+					}
+					if hasRight && dx > 0 && math.Abs(dy) <= modSize*0.48 {
+						hDaub := 1.0 - (math.Abs(dy) / (modSize * 0.48))
+						if hDaub > daub {
+							daub = hDaub
+						}
+					}
+					if hasTop && dy < 0 && math.Abs(dx) <= modSize*0.48 {
+						vDaub := 1.0 - (math.Abs(dx) / (modSize * 0.48))
+						if vDaub > daub {
+							daub = vDaub
+						}
+					}
+					if hasBottom && dy > 0 && math.Abs(dx) <= modSize*0.48 {
+						vDaub := 1.0 - (math.Abs(dx) / (modSize * 0.48))
+						if vDaub > daub {
+							daub = vDaub
+						}
+					}
+
+					if daub <= 0.01 {
+						continue
+					}
+
 					origColor := canvas.At(destX, destY)
 					rO, gO, bO, _ := origColor.RGBA()
 					r8, g8, b8 := uint8(rO>>8), uint8(gO>>8), uint8(bO>>8)
 
 					if isFinderZone {
-						// Finder Pattern with softened aesthetic corners
-						if isDark {
-							canvas.Set(destX, destY, color.RGBA{
-								R: uint8(float64(r8) * 0.08),
-								G: uint8(float64(g8) * 0.08),
-								B: uint8(float64(b8) * 0.08),
-								A: 255,
-							})
-						} else {
-							// Highlight finder ring matching local background luminance
-							canvas.Set(destX, destY, color.RGBA{
-								R: clamp255(int(r8)/3 + 175),
-								G: clamp255(int(g8)/3 + 175),
-								B: clamp255(int(b8)/3 + 175),
-								A: 255,
-							})
-						}
+						// Deep ornate finder shadow with softened edges
+						factor := 1.0 - (0.92 * daub)
+						canvas.Set(destX, destY, color.RGBA{
+							R: uint8(float64(r8) * factor),
+							G: uint8(float64(g8) * factor),
+							B: uint8(float64(b8) * factor),
+							A: 255,
+						})
 					} else {
-						// Data modules: NO WHITE BOX. Only modulate dark elements!
-						if isDark {
-							// Organic dark module daub
-							weight := 1.0 - (dist / radius)
-							if weight < 0 {
-								weight = 0
-							}
-							baseBlend := 0.12 + (0.06 * (1.0 - weight))
-							canvas.Set(destX, destY, color.RGBA{
-								R: uint8(float64(r8) * baseBlend),
-								G: uint8(float64(g8) * baseBlend),
-								B: uint8(float64(b8) * baseBlend),
-								A: 255,
-							})
-						} else {
-							// Light module: Keep natural portrait colors untouched!
-							// Subtle soft radiance only if image region is very dark
-							lum := (uint32(r8)*299 + uint32(g8)*587 + uint32(b8)*114) / 1000
-							if lum < 90 {
-								glow := int(float64(140-lum) * 0.6)
-								canvas.Set(destX, destY, color.RGBA{
-									R: clamp255(int(r8) + glow),
-									G: clamp255(int(g8) + glow),
-									B: clamp255(int(b8) + glow),
-									A: 255,
-								})
-							}
-						}
+						// Organic fabric ink shadow blending
+						factor := 1.0 - (0.86 * daub)
+						canvas.Set(destX, destY, color.RGBA{
+							R: uint8(float64(r8) * factor),
+							G: uint8(float64(g8) * factor),
+							B: uint8(float64(b8) * factor),
+							A: 255,
+						})
 					}
 				}
 			}
