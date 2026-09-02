@@ -13,10 +13,18 @@ import (
 
 var defaultArtQRService = artqr.NewService()
 
+func jsonError(w http.ResponseWriter, message string, code int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error": message,
+	})
+}
+
 // ArtQRPresetsHandler returns the list of active presets
 func ArtQRPresetsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		jsonError(w, "Phương thức không được hỗ trợ", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -30,27 +38,27 @@ func ArtQRPresetsHandler(w http.ResponseWriter, r *http.Request) {
 // GenerateArtQRHandler handles POST /api/art-qr/generate
 func GenerateArtQRHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		jsonError(w, "Phương thức không được hỗ trợ", http.StatusMethodNotAllowed)
 		return
 	}
 
 	// 10MB upload limit
 	if err := r.ParseMultipartForm(10 << 20); err != nil {
-		http.Error(w, "Invalid multipart form: "+err.Error(), http.StatusBadRequest)
+		jsonError(w, "Dữ liệu tải lên không hợp lệ: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	// 1. Extract QR image (Required)
 	qrFile, _, err := r.FormFile("qr_image")
 	if err != nil {
-		http.Error(w, "Trường qr_image là bắt buộc", http.StatusBadRequest)
+		jsonError(w, "Trường qr_image là bắt buộc", http.StatusBadRequest)
 		return
 	}
 	defer qrFile.Close()
 
 	qrBytes, err := io.ReadAll(io.LimitReader(qrFile, 10<<20))
 	if err != nil || len(qrBytes) == 0 {
-		http.Error(w, "Không thể đọc dữ liệu qr_image", http.StatusBadRequest)
+		jsonError(w, "Không thể đọc dữ liệu qr_image", http.StatusBadRequest)
 		return
 	}
 
@@ -88,7 +96,7 @@ func GenerateArtQRHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !placement.IsValid() {
-		http.Error(w, "Tọa độ placement không hợp lệ (x, y >= 0 và x+size <= 1, y+size <= 1)", http.StatusBadRequest)
+		jsonError(w, "Tọa độ placement không hợp lệ (x, y >= 0 và x+size <= 1, y+size <= 1)", http.StatusBadRequest)
 		return
 	}
 
@@ -104,7 +112,7 @@ func GenerateArtQRHandler(w http.ResponseWriter, r *http.Request) {
 		Placement:      placement,
 	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		jsonError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -120,7 +128,7 @@ func GenerateArtQRHandler(w http.ResponseWriter, r *http.Request) {
 // GetArtQRJobHandler handles GET /api/art-qr/jobs/:id
 func GetArtQRJobHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		jsonError(w, "Phương thức không được hỗ trợ", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -130,13 +138,13 @@ func GetArtQRJobHandler(w http.ResponseWriter, r *http.Request) {
 	jobID = strings.TrimPrefix(jobID, "/")
 
 	if jobID == "" {
-		http.Error(w, "Missing job id", http.StatusBadRequest)
+		jsonError(w, "Thiếu mã tác vụ job_id", http.StatusBadRequest)
 		return
 	}
 
 	job, exists := defaultArtQRService.GetJob(jobID)
 	if !exists {
-		http.Error(w, "Job not found", http.StatusNotFound)
+		jsonError(w, "Không tìm thấy tác vụ", http.StatusNotFound)
 		return
 	}
 
