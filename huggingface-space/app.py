@@ -87,41 +87,13 @@ def decode_base64_image(data: str) -> Image.Image | None:
         return None
 
 
-def create_feathered_mask(w: int, h: int, feather_px: int = 20) -> Image.Image:
+def create_feathered_mask(w: int, h: int, feather_px: int = 16) -> Image.Image:
     """Creates a smooth alpha mask with soft gaussian falloff for seamless patch blending."""
     mask = Image.new("L", (w, h), 0)
     draw = ImageDraw.Draw(mask)
-    inset = min(feather_px, min(w, h) // 6)
+    inset = min(feather_px, min(w, h) // 8)
     draw.rectangle([inset, inset, w - inset, h - inset], fill=255)
     return mask.filter(ImageFilter.GaussianBlur(radius=inset))
-
-
-def detect_qr_bounding_box(control_image: Image.Image) -> tuple[int, int, int, int]:
-    """Detects active non-gray QR region on the control canvas (default fallback: center)."""
-    w, h = control_image.size
-    gray = control_image.convert("L")
-    pixels = gray.load()
-    
-    min_x, min_y, max_x, max_y = w, h, 0, 0
-    found = False
-    
-    for y in range(h):
-        for x in range(w):
-            val = pixels[x, y]
-            # Detect black (<80) or white (>180) modules from the neutral gray (128) canvas
-            if val < 80 or val > 180:
-                found = True
-                if x < min_x: min_x = x
-                if y < min_y: min_y = y
-                if x > max_x: max_x = x
-                if y > max_y: max_y = y
-                
-    if not found or max_x <= min_x or max_y <= min_y:
-        return int(w * 0.25), int(h * 0.25), int(w * 0.75), int(h * 0.75)
-        
-    # Add slight padding for context
-    pad = 12
-    return max(0, min_x - pad), max(0, min_y - pad), min(w, max_x + pad), min(h, max_y + pad)
 
 
 @gpu_worker
@@ -135,6 +107,9 @@ def generate(
     seed: int,
     num_outputs: int,
     steps: int,
+    placement_x: float = 0.25,
+    placement_y: float = 0.25,
+    placement_size: float = 0.5,
 ):
     num_outputs = max(1, min(int(num_outputs), 4))
     steps = max(15, min(int(steps), 35))
@@ -169,16 +144,31 @@ def generate(
     for generator in generators:
         if init_image is not None:
             # Regional Patch Diffusion & Seamless Alpha Feather Blending
-            # 1. Find exact coordinates of QR region on the canvas
-            x0, y0, x1, y1 = detect_qr_bounding_box(control_image)
+            # Calculate exact bounding box on the 1024x1024 canvas
+            px = float(placement_x)
+            py = float(placement_y)
+            ps = float(placement_size)
+            if ps <= 0 or ps > 1.0: ps = 0.5
+            if px < 0: px = 0
+            if py < 0: py = 0
+
+            x0 = max(0, int(px * 1024))
+            y0 = max(0, int(py * 1024))
+            p_dim = int(ps * 1024)
+            x1 = min(1024, x0 + p_dim)
+            y1 = min(1024, y0 + p_dim)
             pw = x1 - x0
             ph = y1 - y0
-            
-            # 2. Crop patch from reference image & matching QR control patch
+
+            if pw < 64 or ph < 64:
+                x0, y0, x1, y1 = 256, 256, 768, 768
+                pw, ph = 512, 512
+
+            # Crop ONLY the designated region from the reference image and QR control canvas
             ref_patch = init_image.crop((x0, y0, x1, y1)).resize((768, 768), Image.Resampling.LANCZOS)
             ctrl_patch = control_image.crop((x0, y0, x1, y1)).resize((768, 768), Image.Resampling.NEAREST)
-            
-            # 3. Diffuse only the cropped patch with QR ControlNet
+
+            # Diffuse ONLY that cropped patch with QR ControlNet
             patch_result = img2img_pipe(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
@@ -186,21 +176,21 @@ def generate(
                 control_image=ctrl_patch,
                 strength=reference_strength,
                 num_inference_steps=steps,
-                guidance_scale=7.5,
+                guidance_scale=8.0,
                 controlnet_conditioning_scale=conditioning_scale,
                 generator=generator,
             ).images[0]
-            
-            # 4. Scale diffused patch back to original patch dimensions
+
+            # Scale diffused patch back to exact target dimensions
             diffused_patch_resized = patch_result.resize((pw, ph), Image.Resampling.LANCZOS)
-            
-            # 5. Create smooth feathered alpha mask for seamless edge blending
-            feather_mask = create_feathered_mask(pw, ph, feather_px=18)
-            
-            # 6. Composite the blended patch BACK into the 100% untouched original image
+
+            # Create seamless alpha feather mask
+            feather_mask = create_feathered_mask(pw, ph, feather_px=16)
+
+            # Composite the blended patch BACK into the 100% untouched original photo
             final_composite = init_image.copy()
             final_composite.paste(diffused_patch_resized, (x0, y0), feather_mask)
-            
+
             images.append(final_composite)
         else:
             result = pipe(
@@ -226,11 +216,15 @@ with gr.Blocks(title="Lemas Art QR Worker") as demo:
     qr_ctrl_input = gr.Textbox(label="QR Control Image (Base64 from Go)", lines=3)
     ref_image_input = gr.Textbox(label="Reference Image (Optional Base64)", lines=3)
     with gr.Row():
-        scale_input = gr.Slider(0.4, 2.5, value=1.25, step=0.05, label="Conditioning Scale")
-        strength_input = gr.Slider(0.2, 0.95, value=0.68, step=0.05, label="Patch Strength")
+        scale_input = gr.Slider(0.4, 2.5, value=1.35, step=0.05, label="Conditioning Scale")
+        strength_input = gr.Slider(0.2, 0.95, value=0.65, step=0.05, label="Patch Strength")
         seed_input = gr.Number(value=-1, precision=0, label="Seed")
         count_input = gr.Slider(1, 4, value=1, step=1, label="Outputs")
         steps_input = gr.Slider(15, 35, value=25, step=1, label="Steps")
+    with gr.Row():
+        px_input = gr.Number(value=0.25, label="Placement X")
+        py_input = gr.Number(value=0.25, label="Placement Y")
+        psize_input = gr.Number(value=0.5, label="Placement Size")
     output = gr.Gallery(label="Generated candidates", columns=2)
     gr.Button("Generate", variant="primary").click(
         generate,
@@ -244,6 +238,9 @@ with gr.Blocks(title="Lemas Art QR Worker") as demo:
             seed_input,
             count_input,
             steps_input,
+            px_input,
+            py_input,
+            psize_input,
         ],
         outputs=output,
         api_name="generate",
