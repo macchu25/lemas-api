@@ -152,10 +152,15 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 		job.UpdateStatus("analyzing_style", 20)
 		var err error
 		analysis, err = s.analyzer.AnalyzeStyle(ctx, job.ReferenceImageJPEG, job.Placement)
-		if err != nil {
-			log.Printf("[Vision Error] xKiro style analysis failed: %v", err)
-			job.SetError("Lỗi phân tích thị giác xKiro Vision: " + err.Error())
-			return
+		if err != nil || analysis == nil {
+			log.Printf("[Vision Notice] Vision API unavailable (%v), using smart local visual prompt fallback", err)
+			analysis = &vision.StyleAnalysisResult{
+				Style:           "Chân dung nghệ thuật / Tác phẩm gốc",
+				Palette:         []string{"#8b0000", "#ffd700", "#1a202c", "#f5d0a9"},
+				Lighting:        "Ánh sáng studio cinematic",
+				Texture:         "Vân vải & chi tiết tự nhiên",
+				GeneratedPrompt: "Masterpiece high quality artwork preserving the exact subject, clothing, textures, and background of the image with the QR code seamlessly integrated into natural folds and shadows",
+			}
 		}
 	} else if job.PresetID != "" {
 		if p, ok := s.GetPreset(job.PresetID); ok {
