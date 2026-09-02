@@ -5,16 +5,17 @@ import (
 )
 
 type GenerationRequest struct {
-	Payload           string
-	Prompt            string
-	NegativePrompt    string
-	QRControlImagePNG []byte
-	ConditioningScale float64
-	GuidanceScale     float64
-	Seed              int
-	Width             int
-	Height            int
-	NumOutputs        int
+	Payload             string
+	Prompt              string
+	NegativePrompt      string
+	QRControlImagePNG   []byte
+	ReferenceImageBytes []byte
+	ConditioningScale   float64
+	GuidanceScale       float64
+	Seed                int
+	Width               int
+	Height              int
+	NumOutputs          int
 }
 
 type GeneratedImage struct {

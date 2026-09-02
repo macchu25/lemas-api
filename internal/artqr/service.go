@@ -191,16 +191,17 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 		seed := int(time.Now().UnixNano()&0x7fffffff) + rand.Intn(10000)
 
 		req := &provider.GenerationRequest{
-			Payload:           job.OriginalPayload,
-			Prompt:            finalPrompt,
-			NegativePrompt:    negativePrompt,
-			QRControlImagePNG: job.ControlCanvasPNG,
-			ConditioningScale: currentScale,
-			GuidanceScale:     7.5,
-			Seed:              seed,
-			Width:             1024,
-			Height:            1024,
-			NumOutputs:        needed,
+			Payload:             job.OriginalPayload,
+			Prompt:              finalPrompt,
+			NegativePrompt:      negativePrompt,
+			QRControlImagePNG:   job.ControlCanvasPNG,
+			ReferenceImageBytes: job.ReferenceImageJPEG,
+			ConditioningScale:   currentScale,
+			GuidanceScale:       7.5,
+			Seed:                seed,
+			Width:               1024,
+			Height:              1024,
+			NumOutputs:          needed,
 		}
 
 		candidates, err := s.provider.Generate(ctx, req)

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -51,6 +52,14 @@ func (h *HuggingFaceProvider) generateGradio(ctx context.Context, req *Generatio
 		count = 4
 	}
 
+	var refData any = nil
+	if len(req.ReferenceImageBytes) > 0 {
+		refData = map[string]any{
+			"path": fmt.Sprintf("data:image/jpeg;base64,%s", base64.StdEncoding.EncodeToString(req.ReferenceImageBytes)),
+			"meta": map[string]string{"_type": "gradio.FileData"},
+		}
+	}
+
 	callPayload := map[string]any{
 		"data": []any{
 			req.Payload,
@@ -60,6 +69,7 @@ func (h *HuggingFaceProvider) generateGradio(ctx context.Context, req *Generatio
 			req.Seed,
 			count,
 			25, // steps
+			refData,
 		},
 	}
 

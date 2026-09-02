@@ -8,8 +8,13 @@ LOCAL_WORKER = os.getenv("ART_QR_LOCAL") == "1"
 if not LOCAL_WORKER:
     import spaces
 import torch
-from diffusers import ControlNetModel, StableDiffusionControlNetPipeline, UniPCMultistepScheduler
-from PIL import Image
+from diffusers import (
+    ControlNetModel,
+    StableDiffusionControlNetImg2ImgPipeline,
+    StableDiffusionControlNetPipeline,
+    UniPCMultistepScheduler,
+)
+from PIL import Image, ImageOps
 
 
 BASE_MODEL = "stable-diffusion-v1-5/stable-diffusion-v1-5"
@@ -32,15 +37,32 @@ pipe = StableDiffusionControlNetPipeline.from_pretrained(
 )
 pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
 
+# Shared memory img2img pipeline for style reference harmonization
+img2img_pipe = StableDiffusionControlNetImg2ImgPipeline(
+    vae=pipe.vae,
+    text_encoder=pipe.text_encoder,
+    tokenizer=pipe.tokenizer,
+    unet=pipe.unet,
+    controlnet=pipe.controlnet,
+    scheduler=pipe.scheduler,
+    safety_checker=None,
+    feature_extractor=None,
+    requires_safety_checker=False,
+)
+
 if torch.cuda.is_available():
     pipe.to("cuda")
+    img2img_pipe.to("cuda")
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
     torch.backends.cudnn.benchmark = True
     pipe.enable_vae_slicing()
+    img2img_pipe.enable_vae_slicing()
 else:
     pipe.enable_model_cpu_offload()
     pipe.enable_attention_slicing()
+    img2img_pipe.enable_model_cpu_offload()
+    img2img_pipe.enable_attention_slicing()
 
 
 def gpu_worker(fn):
@@ -126,6 +148,7 @@ def generate(
     seed: int,
     num_outputs: int,
     steps: int,
+    ref_image: Image.Image | None = None,
 ):
     if not payload:
         raise gr.Error("QR payload is required")
@@ -134,23 +157,46 @@ def generate(
     conditioning_scale = max(0.8, min(float(conditioning_scale), 2.2))
     seed = int(seed) if int(seed) >= 0 else random.randint(0, 2**31 - 1)
     control_image, qr_region, functional_region = build_qr_condition(payload)
+
     if not LOCAL_WORKER:
         pipe.to("cuda")
-    generators = [torch.Generator(device="cuda").manual_seed(seed + i) for i in range(num_outputs)]
+        img2img_pipe.to("cuda")
+
+    generators = [torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(seed + i) for i in range(num_outputs)]
     images = []
-    correction_levels = [0.25, 0.45, 0.65, 0.85]
+    correction_levels = [0.20, 0.35, 0.50, 0.70]
+
+    # Resize reference image if provided for style harmonization
+    init_image = None
+    if ref_image is not None:
+        init_image = ImageOps.fit(ref_image.convert("RGB"), control_image.size, Image.Resampling.LANCZOS)
+
     for index, generator in enumerate(generators):
-        result = pipe(
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            image=control_image,
-            num_inference_steps=steps,
-            guidance_scale=8.5,
-            controlnet_conditioning_scale=conditioning_scale,
-            generator=generator,
-            width=control_image.width,
-            height=control_image.height,
-        )
+        if init_image is not None:
+            result = img2img_pipe(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                image=init_image,
+                control_image=control_image,
+                strength=0.82,
+                num_inference_steps=steps,
+                guidance_scale=8.0,
+                controlnet_conditioning_scale=conditioning_scale,
+                generator=generator,
+            )
+        else:
+            result = pipe(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                image=control_image,
+                num_inference_steps=steps,
+                guidance_scale=8.5,
+                controlnet_conditioning_scale=conditioning_scale,
+                generator=generator,
+                width=control_image.width,
+                height=control_image.height,
+            )
+
         amount = correction_levels[min(index, len(correction_levels) - 1)]
         images.append(
             correct_modules(
@@ -165,7 +211,7 @@ def generate(
 
 
 with gr.Blocks(title="Lemas Art QR Worker") as demo:
-    gr.Markdown("# Lemas Art QR · QR-ControlNet ZeroGPU")
+    gr.Markdown("# Lemas Art QR · QR-ControlNet & Style Harmonization Worker")
     with gr.Row():
         payload_input = gr.Textbox(label="Decoded QR payload", lines=4)
         output = gr.Gallery(label="Generated candidates", columns=2)
@@ -176,9 +222,10 @@ with gr.Blocks(title="Lemas Art QR Worker") as demo:
         seed_input = gr.Number(value=-1, precision=0, label="Seed")
         count_input = gr.Slider(1, 4, value=4, step=1, label="Outputs")
         steps_input = gr.Slider(15, 35, value=25, step=1, label="Steps")
+    ref_image_input = gr.Image(label="Optional Reference Style Image", type="pil")
     gr.Button("Generate", variant="primary").click(
         generate,
-        inputs=[payload_input, prompt_input, negative_input, scale_input, seed_input, count_input, steps_input],
+        inputs=[payload_input, prompt_input, negative_input, scale_input, seed_input, count_input, steps_input, ref_image_input],
         outputs=output,
         api_name="generate",
     )
