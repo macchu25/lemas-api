@@ -168,7 +168,7 @@ def generate(
             ref_patch = init_image.crop((x0, y0, x1, y1)).resize((768, 768), Image.Resampling.LANCZOS)
             ctrl_patch = control_image.crop((x0, y0, x1, y1)).resize((768, 768), Image.Resampling.NEAREST)
 
-            # Diffuse ONLY that cropped patch with QR ControlNet
+            # Diffuse ONLY that cropped patch with QR ControlNet with guidance end at 85% for organic blending
             patch_result = img2img_pipe(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
@@ -178,6 +178,8 @@ def generate(
                 num_inference_steps=steps,
                 guidance_scale=8.0,
                 controlnet_conditioning_scale=conditioning_scale,
+                control_guidance_start=0.0,
+                control_guidance_end=0.85,
                 generator=generator,
             ).images[0]
 
@@ -200,6 +202,8 @@ def generate(
                 num_inference_steps=steps,
                 guidance_scale=8.0,
                 controlnet_conditioning_scale=conditioning_scale,
+                control_guidance_start=0.0,
+                control_guidance_end=0.85,
                 generator=generator,
                 width=1024,
                 height=1024,
