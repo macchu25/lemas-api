@@ -157,13 +157,8 @@ def generate(
             # 3. Crop patch from reference image
             ref_patch = raw_ref_image.crop((px0, py0, px0 + p_size, py0 + p_size)).resize((768, 768), Image.Resampling.LANCZOS)
 
-            # 4. Crop matching QR control patch from control canvas
-            cw, ch = control_image.size
-            c_min_dim = min(cw, ch)
-            c_psize = int(ps * c_min_dim)
-            c_px0 = max(0, min(cw - c_psize, int(px * cw)))
-            c_py0 = max(0, min(ch - c_psize, int(py * ch)))
-            ctrl_patch = control_image.crop((c_px0, c_py0, c_px0 + c_psize, c_py0 + c_psize)).resize((768, 768), Image.Resampling.NEAREST)
+            # 4. Use pure high-contrast QR control directly on the cropped patch
+            ctrl_patch = control_image.resize((768, 768), Image.Resampling.NEAREST)
 
             # 5. Diffuse ONLY that cropped patch with QR ControlNet
             patch_result = img2img_pipe(

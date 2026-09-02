@@ -205,15 +205,20 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 		currentScale := conditioningScales[scaleIdx]
 		seed := int(time.Now().UnixNano()&0x7fffffff) + rand.Intn(10000)
 
+		qrControlBytes := job.ControlCanvasPNG
+		if len(job.ReferenceImageJPEG) > 0 && len(job.SourceQRPNG) > 0 {
+			qrControlBytes = job.SourceQRPNG
+		}
+
 		req := &provider.GenerationRequest{
 			Payload:             job.OriginalPayload,
 			Prompt:              finalPrompt,
 			NegativePrompt:      negativePrompt,
-			QRControlImagePNG:   job.ControlCanvasPNG,
+			QRControlImagePNG:   qrControlBytes,
 			ReferenceImageBytes: job.ReferenceImageJPEG,
 			Placement:           job.Placement,
 			ConditioningScale:   currentScale,
-			ReferenceStrength:   0.62,
+			ReferenceStrength:   0.72,
 			GuidanceScale:       7.5,
 			Seed:                seed,
 			Width:               1024,
