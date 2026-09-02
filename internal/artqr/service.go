@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"strings"
 	"sync"
 	"time"
 
@@ -71,7 +72,12 @@ type CreateJobParams struct {
 	QRPNGBytes     []byte
 	ReferenceBytes []byte
 	PresetID       string
+	CustomPrompt   string
 	Placement      model.Placement
+}
+
+func (s *Service) AnalyzeStyle(ctx context.Context, refImgBytes []byte, placement model.Placement) (*vision.StyleAnalysisResult, error) {
+	return s.analyzer.AnalyzeStyle(ctx, refImgBytes, placement)
 }
 
 func (s *Service) CreateJob(ctx context.Context, params CreateJobParams) (*model.ArtQRJob, error) {
@@ -106,14 +112,16 @@ func (s *Service) CreateJob(ctx context.Context, params CreateJobParams) (*model
 		OriginalPayload:     decoded.Payload,
 		OriginalPayloadHash: decoded.PayloadHash,
 		PresetID:            params.PresetID,
+		Prompt:              params.CustomPrompt,
 		Placement:           params.Placement,
 		MaxAttempts:         4,
-		Images:              []model.OutputImage{},
+		Attempts:            0,
+		ControlCanvasPNG:    controlCanvas,
+		SourceQRPNG:         decoded.PNGBytes,
+		ReferenceImageJPEG:  params.ReferenceBytes,
+		Images:              make([]model.OutputImage, 0),
 		CreatedAt:           now,
 		UpdatedAt:           now,
-		SourceQRPNG:         decoded.PNGBytes,
-		ControlCanvasPNG:    controlCanvas,
-		ReferenceImageJPEG:  params.ReferenceBytes,
 	}
 
 	s.mu.Lock()
@@ -123,8 +131,7 @@ func (s *Service) CreateJob(ctx context.Context, params CreateJobParams) (*model
 	// Launch async execution
 	go s.processJob(job)
 
-	snap := job.Snapshot()
-	return &snap, nil
+	return job, nil
 }
 
 func (s *Service) processJob(job *model.ArtQRJob) {
@@ -133,6 +140,8 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
+
+	job.UpdateStatus("processing", 15)
 
 	// Step A: Style Analysis (if reference image is provided)
 	var analysis *vision.StyleAnalysisResult
@@ -162,6 +171,9 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 
 	// Step B: Build placement-aware prompt
 	finalPrompt, negativePrompt := prompt.BuildPrompt(preset, analysis, job.Placement)
+	if strings.TrimSpace(job.Prompt) != "" {
+		finalPrompt = strings.TrimSpace(job.Prompt)
+	}
 	job.Prompt = finalPrompt
 	job.NegativePrompt = negativePrompt
 

@@ -12,6 +12,8 @@ try:
 except ImportError:
     HAVE_SPACES = False
 
+LOCAL_WORKER = os.environ.get("LOCAL_WORKER", "1") == "1"
+
 import torch
 from diffusers import (
     ControlNetModel,

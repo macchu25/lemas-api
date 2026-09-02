@@ -67,6 +67,7 @@ func main() {
 
 	// Modular Art QR Pipeline Endpoints
 	mux.HandleFunc("/api/art-qr/generate", handlers.GenerateArtQRHandler)
+	mux.HandleFunc("/api/art-qr/analyze-style", handlers.AnalyzeStyleHandler)
 	mux.HandleFunc("/api/art-qr/jobs/", handlers.GetArtQRJobHandler)
 	mux.HandleFunc("/api/art-qr/jobs", handlers.GetArtQRJobHandler)
 	mux.HandleFunc("/api/art-qr/presets", handlers.ArtQRPresetsHandler)

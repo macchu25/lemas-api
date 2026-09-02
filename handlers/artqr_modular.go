@@ -69,8 +69,9 @@ func GenerateArtQRHandler(w http.ResponseWriter, r *http.Request) {
 		refBytes, _ = io.ReadAll(io.LimitReader(refFile, 10<<20))
 	}
 
-	// 3. Extract Preset ID (Optional)
+	// 3. Extract Preset ID & Custom Prompt (Optional)
 	presetID := strings.TrimSpace(r.FormValue("preset_id"))
+	customPrompt := strings.TrimSpace(r.FormValue("custom_prompt"))
 
 	// 4. Extract & Validate Placement
 	placement := model.DefaultPlacement()
@@ -109,6 +110,7 @@ func GenerateArtQRHandler(w http.ResponseWriter, r *http.Request) {
 		QRPNGBytes:     qrBytes,
 		ReferenceBytes: refBytes,
 		PresetID:       presetID,
+		CustomPrompt:   customPrompt,
 		Placement:      placement,
 	})
 	if err != nil {
@@ -122,6 +124,60 @@ func GenerateArtQRHandler(w http.ResponseWriter, r *http.Request) {
 		"jobId":    job.ID,
 		"status":   job.Status,
 		"progress": job.Progress,
+	})
+}
+
+// AnalyzeStyleHandler handles POST /api/art-qr/analyze-style
+func AnalyzeStyleHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonError(w, "Phương thức không được hỗ trợ", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if err := r.ParseMultipartForm(10 << 20); err != nil {
+		jsonError(w, "Dữ liệu tải lên không hợp lệ", http.StatusBadRequest)
+		return
+	}
+
+	file, _, err := r.FormFile("reference_image")
+	if err != nil {
+		jsonError(w, "Trường reference_image là bắt buộc", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	refBytes, err := io.ReadAll(io.LimitReader(file, 10<<20))
+	if err != nil || len(refBytes) == 0 {
+		jsonError(w, "Không thể đọc ảnh tham chiếu", http.StatusBadRequest)
+		return
+	}
+
+	placement := model.DefaultPlacement()
+	if rawPlacement := r.FormValue("placement"); rawPlacement != "" {
+		_ = json.Unmarshal([]byte(rawPlacement), &placement)
+	}
+
+	result, err := defaultArtQRService.AnalyzeStyle(r.Context(), refBytes, placement)
+	if err != nil || result == nil {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"style":    "Chân dung nghệ thuật / Tác phẩm gốc",
+			"palette":  []string{"#8b0000", "#ffd700", "#1a202c", "#f5d0a9"},
+			"lighting": "Ánh sáng studio cinematic",
+			"texture":  "Vân vải & chi tiết tự nhiên",
+			"prompt":   "Masterpiece portrait preserving the exact subject, clothing, and background of the image with the QR code seamlessly integrated",
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"style":       result.Style,
+		"palette":     result.Palette,
+		"lighting":    result.Lighting,
+		"texture":     result.Texture,
+		"prompt":      result.GeneratedPrompt,
+		"composition": result.Composition,
 	})
 }
 
