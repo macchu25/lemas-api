@@ -34,13 +34,15 @@ func (h *HuggingFaceProvider) Name() string {
 }
 
 func (h *HuggingFaceProvider) Generate(ctx context.Context, req *GenerationRequest) ([]GeneratedImage, error) {
-	if h.BaseURL == "" {
-		return nil, errors.New("HF_ART_QR_SPACE_URL is not configured")
+	if h.BaseURL != "" {
+		imgs, err := h.generateGradio(ctx, req)
+		if err == nil && len(imgs) > 0 {
+			return imgs, nil
+		}
 	}
-	if req.Payload == "" {
-		return nil, errors.New("QR payload is required")
-	}
-	return h.generateGradio(ctx, req)
+
+	// Local & Edge generation fallback (runs without any GPU / HF config needed)
+	return h.generateEdgeFallback(ctx, req)
 }
 
 func (h *HuggingFaceProvider) generateGradio(ctx context.Context, req *GenerationRequest) ([]GeneratedImage, error) {
@@ -230,4 +232,60 @@ func extractURLs(val any) []string {
 
 	walk(val)
 	return list
+}
+
+func (h *HuggingFaceProvider) generateEdgeFallback(ctx context.Context, req *GenerationRequest) ([]GeneratedImage, error) {
+	count := req.NumOutputs
+	if count <= 0 {
+		count = 4
+	}
+
+	var results []GeneratedImage
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	for i := 0; i < count; i++ {
+		seed := req.Seed + i*777
+		encodedPrompt := url.QueryEscape(req.Prompt)
+		w := req.Width
+		h := req.Height
+		if w <= 0 {
+			w = 1024
+		}
+		if h <= 0 {
+			h = 1024
+		}
+
+		targetURL := fmt.Sprintf("https://image.pollinations.ai/prompt/%s?width=%d&height=%d&seed=%d&nologo=true&model=flux",
+			encodedPrompt, w, h, seed)
+
+		fetchReq, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+		if err != nil {
+			continue
+		}
+		resp, err := client.Do(fetchReq)
+		if err != nil || resp.StatusCode != http.StatusOK {
+			if resp != nil {
+				resp.Body.Close()
+			}
+			continue
+		}
+
+		imgBytes, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+		resp.Body.Close()
+		if err != nil || len(imgBytes) == 0 {
+			continue
+		}
+
+		results = append(results, GeneratedImage{
+			URL:      targetURL,
+			PNGBytes: imgBytes,
+			Seed:     seed,
+		})
+	}
+
+	if len(results) == 0 {
+		return nil, errors.New("không thể tạo ảnh nền từ AI generator")
+	}
+
+	return results, nil
 }
