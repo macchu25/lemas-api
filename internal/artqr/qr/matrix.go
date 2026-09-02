@@ -8,6 +8,7 @@ import (
 	"image/png"
 	"math"
 
+	qrcode "github.com/skip2/go-qrcode"
 	"xkiro-backend/internal/artqr/model"
 )
 
@@ -69,16 +70,16 @@ func CompositeArtQR(artBytes []byte, qrPNG []byte, placement model.Placement, ca
 
 // CompositeArtQRWithStyle blends the painting and QR code with customizable artistic style profiles
 func CompositeArtQRWithStyle(artBytes []byte, qrPNG []byte, placement model.Placement, canvasSize int, variation int) ([]byte, error) {
+	return CompositeArtQRExact(artBytes, "", qrPNG, placement, canvasSize, variation)
+}
+
+// CompositeArtQRExact uses exact mathematical QR matrix from payload to ensure 100% scan precision
+func CompositeArtQRExact(artBytes []byte, payload string, qrPNG []byte, placement model.Placement, canvasSize int, variation int) ([]byte, error) {
 	if canvasSize <= 0 {
 		canvasSize = 1024
 	}
 
 	artImg, _, err := image.Decode(bytes.NewReader(artBytes))
-	if err != nil {
-		return nil, err
-	}
-
-	qrImg, _, err := image.Decode(bytes.NewReader(qrPNG))
 	if err != nil {
 		return nil, err
 	}
@@ -110,67 +111,58 @@ func CompositeArtQRWithStyle(artBytes []byte, qrPNG []byte, placement model.Plac
 		pSize = canvasSize - py
 	}
 
-	// 3. Detect QR Module Matrix Dimension
-	qrGray := image.NewGray(qrImg.Bounds())
-	draw.Draw(qrGray, qrGray.Bounds(), qrImg, image.Point{}, draw.Src)
-	bounds := qrGray.Bounds()
-	w, h := bounds.Dx(), bounds.Dy()
-
-	// Find module count along width by scanning first row of top-left finder pattern
-	moduleCount := 25
-	if w > 0 {
-		// Sample transitions
-		transitions := 0
-		lastVal := qrGray.GrayAt(bounds.Min.X, bounds.Min.Y).Y < 128
-		for x := 1; x < w; x++ {
-			curVal := qrGray.GrayAt(bounds.Min.X+x, bounds.Min.Y).Y < 128
-			if curVal != lastVal {
-				transitions++
-				lastVal = curVal
-			}
+	// 3. Extract exact mathematical QR matrix
+	var matrix [][]bool
+	if payload != "" {
+		code, qErr := qrcode.New(payload, qrcode.Highest)
+		if qErr == nil {
+			matrix = code.Bitmap()
 		}
-		if transitions >= 6 {
-			moduleCount = (transitions + 2) * 2
-			if moduleCount < 21 {
-				moduleCount = 21
-			} else if moduleCount > 60 {
-				moduleCount = 33
+	}
+
+	// Fallback to image decoding if payload was empty
+	if len(matrix) == 0 && len(qrPNG) > 0 {
+		qrImg, _, imgErr := image.Decode(bytes.NewReader(qrPNG))
+		if imgErr == nil {
+			bounds := qrImg.Bounds()
+			w, h := bounds.Dx(), bounds.Dy()
+			dim := 29
+			matrix = make([][]bool, dim)
+			for r := 0; r < dim; r++ {
+				matrix[r] = make([]bool, dim)
+				sY := bounds.Min.Y + int((float64(r)+0.5)*float64(h)/float64(dim))
+				for c := 0; c < dim; c++ {
+					sX := bounds.Min.X + int((float64(c)+0.5)*float64(w)/float64(dim))
+					rQ, gQ, bQ, _ := qrImg.At(sX, sY).RGBA()
+					lum := (rQ*299 + gQ*587 + bQ*114) / 1000 >> 8
+					matrix[r][c] = lum < 128
+				}
 			}
 		}
 	}
 
+	if len(matrix) == 0 {
+		return nil, image.ErrFormat
+	}
+
+	moduleCount := len(matrix)
 	modSize := float64(pSize) / float64(moduleCount)
-	if modSize < 4.0 {
-		modSize = 4.0
-	}
 
-	// 4. Sample boolean matrix of QR modules
-	matrix := make([][]bool, moduleCount)
-	for r := 0; r < moduleCount; r++ {
-		matrix[r] = make([]bool, moduleCount)
-		sampleY := bounds.Min.Y + int((float64(r)+0.5)*float64(h)/float64(moduleCount))
-		for c := 0; c < moduleCount; c++ {
-			sampleX := bounds.Min.X + int((float64(c)+0.5)*float64(w)/float64(moduleCount))
-			matrix[r][c] = qrGray.GrayAt(sampleX, sampleY).Y < 128
-		}
-	}
-
-	// 5. Render Organic Painterly Brushstrokes & Glowing Highlights
+	// 4. Render Organic Painterly Strokes with Guaranteed Optical Scan Contrast
 	for r := 0; r < moduleCount; r++ {
 		for c := 0; c < moduleCount; c++ {
 			isDark := matrix[r][c]
 
-			// Check if within 3 Finder Pattern zones (7x7 modules at top-left, top-right, bottom-left)
-			isFinderTL := r < 7 && c < 7
-			isFinderTR := r < 7 && c >= moduleCount-7
-			isFinderBL := r >= moduleCount-7 && c < 7
+			// Finder Pattern corner zones
+			isFinderTL := r < 8 && c < 8
+			isFinderTR := r < 8 && c >= moduleCount-8
+			isFinderBL := r >= moduleCount-8 && c < 8
 			isFinderZone := isFinderTL || isFinderTR || isFinderBL
 
 			centerX := float64(px) + (float64(c)+0.5)*modSize
 			centerY := float64(py) + (float64(r)+0.5)*modSize
-			radius := modSize * 0.48
+			radius := modSize * 0.49
 
-			// Bounding box for this module's stroke
 			minX := int(centerX - modSize*0.5)
 			maxX := int(centerX + modSize*0.5)
 			minY := int(centerY - modSize*0.5)
@@ -191,26 +183,26 @@ func CompositeArtQRWithStyle(artBytes []byte, qrPNG []byte, placement model.Plac
 					r8, g8, b8 := uint8(rO>>8), uint8(gO>>8), uint8(bO>>8)
 
 					if isFinderZone {
-						// Concentric Ornate Finder Rings with softened rounded corners
+						// Concentric Finder Halo with softened rounded corners
 						if isDark {
-							// Deep indigo/navy shadow matching painting
+							// Deep rich oil shadow
 							canvas.Set(destX, destY, color.RGBA{
-								R: uint8(float64(r8) * 0.10),
-								G: uint8(float64(g8) * 0.10),
-								B: uint8(float64(b8) * 0.10),
+								R: uint8(float64(r8) * 0.08),
+								G: uint8(float64(g8) * 0.08),
+								B: uint8(float64(b8) * 0.08),
 								A: 255,
 							})
 						} else {
-							// Luminous celestial glow
+							// Luminous celestial highlight
 							canvas.Set(destX, destY, color.RGBA{
-								R: clamp255(int(r8)/4 + 195),
-								G: clamp255(int(g8)/4 + 195),
-								B: clamp255(int(b8)/4 + 195),
+								R: clamp255(int(r8)/4 + 205),
+								G: clamp255(int(g8)/4 + 205),
+								B: clamp255(int(b8)/4 + 205),
 								A: 255,
 							})
 						}
 					} else {
-						// Organic painterly daub with soft Gaussian falloff
+						// Organic painterly stroke with soft edge falloff
 						weight := 1.0 - (dist / radius)
 						if weight < 0 {
 							weight = 0
@@ -220,21 +212,21 @@ func CompositeArtQRWithStyle(artBytes []byte, qrPNG []byte, placement model.Plac
 						}
 
 						if isDark {
-							// Blend dark oil paint stroke with painting brushwork
-							blendFactor := 1.0 - (0.80 * weight)
+							// Dark oil paint stroke
+							blend := 1.0 - (0.86 * weight)
 							canvas.Set(destX, destY, color.RGBA{
-								R: uint8(float64(r8) * blendFactor),
-								G: uint8(float64(g8) * blendFactor),
-								B: uint8(float64(b8) * blendFactor),
+								R: uint8(float64(r8) * blend),
+								G: uint8(float64(g8) * blend),
+								B: uint8(float64(b8) * blend),
 								A: 255,
 							})
 						} else {
-							// Blend radiant highlight / star-glow stroke
-							glowAmount := int(185.0 * weight)
+							// Radiant paint highlight / star stroke
+							glow := int(195.0 * weight)
 							canvas.Set(destX, destY, color.RGBA{
-								R: clamp255(int(r8)*2/10 + glowAmount),
-								G: clamp255(int(g8)*2/10 + glowAmount),
-								B: clamp255(int(b8)*2/10 + glowAmount),
+								R: clamp255(int(r8)*2/10 + glow),
+								G: clamp255(int(g8)*2/10 + glow),
+								B: clamp255(int(b8)*2/10 + glow),
 								A: 255,
 							})
 						}

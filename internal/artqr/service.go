@@ -226,8 +226,8 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 			finalImgBytes := baseArtBytes
 			finalURL := cand.URL
 
-			if len(job.SourceQRPNG) > 0 && len(baseArtBytes) > 0 {
-				composited, compErr := qr.CompositeArtQRWithStyle(baseArtBytes, job.SourceQRPNG, job.Placement, 1024, idx)
+			if len(baseArtBytes) > 0 && (len(job.OriginalPayload) > 0 || len(job.SourceQRPNG) > 0) {
+				composited, compErr := qr.CompositeArtQRExact(baseArtBytes, job.OriginalPayload, job.SourceQRPNG, job.Placement, 1024, idx)
 				if compErr == nil && len(composited) > 0 {
 					finalImgBytes = composited
 					finalURL = "data:image/png;base64," + base64.StdEncoding.EncodeToString(composited)
