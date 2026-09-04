@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -37,12 +38,16 @@ func (h *HuggingFaceProvider) Name() string {
 func (h *HuggingFaceProvider) Generate(ctx context.Context, req *GenerationRequest) ([]GeneratedImage, error) {
 	if h.BaseURL != "" && req != nil && req.Payload != "" {
 		imgs, err := h.generateGradio(ctx, req)
-		if err == nil && len(imgs) > 0 {
+		if err != nil {
+			log.Printf("[AI Provider Error] Gradio worker error: %v", err)
+			return nil, fmt.Errorf("không thể tạo ảnh từ ControlNet engine: %w", err)
+		}
+		if len(imgs) > 0 {
 			return imgs, nil
 		}
 	}
 
-	return h.generateEdgeFallback(ctx, req)
+	return nil, errors.New("AI worker chưa sẵn sàng hoặc không thể tạo ảnh")
 }
 
 func (h *HuggingFaceProvider) generateGradio(ctx context.Context, req *GenerationRequest) ([]GeneratedImage, error) {
@@ -184,8 +189,15 @@ func (h *HuggingFaceProvider) waitEvent(ctx context.Context, eventID string) ([]
 		if err != nil {
 			return nil, err
 		}
+
+		mime := "image/png"
+		if bytes.HasPrefix(imgBytes, []byte("RIFF")) {
+			mime = "image/webp"
+		}
+		dataURL := fmt.Sprintf("data:%s;base64,%s", mime, base64.StdEncoding.EncodeToString(imgBytes))
+
 		results = append(results, GeneratedImage{
-			URL:      u,
+			URL:      dataURL,
 			PNGBytes: imgBytes,
 			Seed:     idx,
 		})
@@ -195,26 +207,41 @@ func (h *HuggingFaceProvider) waitEvent(ctx context.Context, eventID string) ([]
 }
 
 func (h *HuggingFaceProvider) downloadImage(ctx context.Context, targetURL string) ([]byte, error) {
+	// If it's a local file on disk, read directly!
+	if fi, err := os.Stat(targetURL); err == nil && !fi.IsDir() {
+		return os.ReadFile(targetURL)
+	}
+
+	cleanURL := strings.ReplaceAll(targetURL, "\\", "/")
 	base, err := url.Parse(h.BaseURL)
 	if err != nil {
 		return nil, err
 	}
-	target, err := url.Parse(targetURL)
+	target, err := url.Parse(cleanURL)
 	if err != nil {
 		return nil, err
 	}
-	// Never send the HF token to a URL supplied by another host.
-	if target.Scheme != base.Scheme || target.Host != base.Host {
+
+	// Allow loopback host matching (127.0.0.1 <-> localhost)
+	isLoopbackBase := strings.HasPrefix(base.Host, "127.0.0.1") || strings.HasPrefix(base.Host, "localhost")
+	isLoopbackTarget := strings.HasPrefix(target.Host, "127.0.0.1") || strings.HasPrefix(target.Host, "localhost")
+
+	if isLoopbackBase && isLoopbackTarget {
+		target.Scheme = base.Scheme
+		target.Host = base.Host
+		cleanURL = target.String()
+	} else if target.Scheme != base.Scheme || target.Host != base.Host {
 		return nil, errors.New("generated image URL is outside the configured Space")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cleanURL, nil)
 	if err != nil {
 		return nil, err
 	}
 	if h.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+h.Token)
 	}
-	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -223,12 +250,12 @@ func (h *HuggingFaceProvider) downloadImage(ctx context.Context, targetURL strin
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("generated image returned HTTP %d", resp.StatusCode)
 	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, (10<<20)+1))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, (20<<20)+1))
 	if err != nil {
 		return nil, err
 	}
-	if len(raw) == 0 || len(raw) > 10<<20 {
-		return nil, errors.New("generated image size is invalid")
+	if len(raw) == 0 {
+		return nil, errors.New("generated image size is empty")
 	}
 	return raw, nil
 }
@@ -241,13 +268,21 @@ func extractURLs(val any) []string {
 	walk = func(node any) {
 		switch v := node.(type) {
 		case map[string]any:
-			for k, child := range v {
-				if (k == "url" || k == "path") && child != nil {
-					if str, ok := child.(string); ok && strings.HasPrefix(str, "http") && !seen[str] {
-						seen[str] = true
-						list = append(list, str)
-					}
+			// Priority 1: Check "path" if it's an existing local file
+			if p, ok := v["path"].(string); ok && p != "" {
+				if fi, err := os.Stat(p); err == nil && !fi.IsDir() && !seen[p] {
+					seen[p] = true
+					list = append(list, p)
+					return
 				}
+			}
+			// Priority 2: Check "url"
+			if u, ok := v["url"].(string); ok && u != "" && !seen[u] {
+				seen[u] = true
+				list = append(list, u)
+				return
+			}
+			for _, child := range v {
 				walk(child)
 			}
 		case []any:

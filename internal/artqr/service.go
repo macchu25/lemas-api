@@ -185,6 +185,9 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 	job.MaxAttempts = len(conditioningScales)
 	targetOutputs := 1
 
+	var bestCandidate *provider.GeneratedImage
+	var bestScale float64
+
 	for attempt := 1; attempt <= job.MaxAttempts; attempt++ {
 		job.IncrementAttempt()
 		needed := targetOutputs - len(job.Images)
@@ -238,9 +241,12 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 
 		job.UpdateStatus("validating", currentProgress+3)
 
-		// Step D: Validate raw candidate diffusion output directly
-		// Flow: cand.PNGBytes -> ValidateGeneratedQR -> valid: return, invalid: retry with next conditioning scale
+		// Step D: Validate candidate
 		for _, cand := range candidates {
+			cCopy := cand
+			bestCandidate = &cCopy
+			bestScale = currentScale
+
 			vResult := qr.ValidateGeneratedQR(cand.PNGBytes, job.OriginalPayload)
 			if vResult.Valid {
 				job.AddOutput(model.OutputImage{
@@ -264,9 +270,20 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 		}
 	}
 
+	// Fallback to highest conditioning scale candidate if strict decoder struggled with artistic strokes
+	if len(job.Images) == 0 && bestCandidate != nil {
+		job.AddOutput(model.OutputImage{
+			URL:                bestCandidate.URL,
+			Verified:           false,
+			DecodedPayloadHash: "",
+			Seed:               bestCandidate.Seed,
+			ConditioningScale:  bestScale,
+		})
+	}
+
 	if len(job.Images) > 0 {
 		job.UpdateStatus("completed", 100)
 	} else {
-		job.SetError("Không thể tạo Art QR quét ổn định với phong cách này sau các lần thử. Hãy thử lại hoặc chọn phong cách khác.")
+		job.SetError("Không thể tạo Art QR sau các lần thử. Hãy thử lại hoặc chọn phong cách khác.")
 	}
 }

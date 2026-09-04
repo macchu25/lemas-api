@@ -55,15 +55,6 @@ func ValidateGeneratedQR(imgBytes []byte, expectedPayload string) ValidationResu
 		}
 	}
 
-	// If generated from exact mathematical matrix, accept with verified hash
-	if expectedPayload != "" {
-		return ValidationResult{
-			Valid:          true,
-			DecodedPayload: expectedPayload,
-			PayloadHash:    HashPayload(expectedPayload),
-		}
-	}
-
 	return ValidationResult{
 		Valid: false,
 		Error: "qr not recognized by decoder",
