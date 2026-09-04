@@ -7,6 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/jpeg"
+	_ "image/png"
 	"io"
 	"net/http"
 	"os"
@@ -86,6 +89,53 @@ func describeRegion(p model.Placement) string {
 	return vertical + "-" + horizontal
 }
 
+func cropPatch(refImgBytes []byte, p model.Placement) []byte {
+	img, _, err := image.Decode(bytes.NewReader(refImgBytes))
+	if err != nil {
+		return nil
+	}
+	bounds := img.Bounds()
+	origW := bounds.Dx()
+	origH := bounds.Dy()
+	if origW == 0 || origH == 0 {
+		return nil
+	}
+	minDim := origW
+	if origH < minDim {
+		minDim = origH
+	}
+	pSize := int(p.Size * float64(minDim))
+	if pSize < 64 {
+		pSize = minDim / 2
+	}
+	px0 := int(p.X * float64(origW))
+	py0 := int(p.Y * float64(origH))
+	if px0 < 0 {
+		px0 = 0
+	}
+	if py0 < 0 {
+		py0 = 0
+	}
+	if px0+pSize > origW {
+		pSize = origW - px0
+	}
+	if py0+pSize > origH {
+		pSize = origH - py0
+	}
+
+	type subImager interface {
+		SubImage(r image.Rectangle) image.Image
+	}
+	if si, ok := img.(subImager); ok {
+		sub := si.SubImage(image.Rect(bounds.Min.X+px0, bounds.Min.Y+py0, bounds.Min.X+px0+pSize, bounds.Min.Y+py0+pSize))
+		var buf bytes.Buffer
+		if err := jpeg.Encode(&buf, sub, &jpeg.Options{Quality: 92}); err == nil {
+			return buf.Bytes()
+		}
+	}
+	return nil
+}
+
 func (a *XKiroVisionAnalyzer) getKeys() []string {
 	var keys []string
 	if a.APIKey != "" {
@@ -140,6 +190,12 @@ func (a *XKiroVisionAnalyzer) AnalyzeStyle(ctx context.Context, refImgBytes []by
 		mimeType = "image/jpeg"
 	}
 
+	patchBytes := cropPatch(refImgBytes, placement)
+	patchBase64 := ""
+	if len(patchBytes) > 0 {
+		patchBase64 = base64.StdEncoding.EncodeToString(patchBytes)
+	}
+
 	systemInstruction := `You are an expert art director, forensic visual AI, and ControlNet QR prompt engineer.
 Analyze the provided artwork in exhaustive forensic detail and construct a precision JSON breakdown for seamless ControlNet QR embedding.
 The QR placement target is in the ` + regionName + ` region (normalized coordinates: X=` + fmt.Sprintf("%.2f", placement.X) + `, Y=` + fmt.Sprintf("%.2f", placement.Y) + `, Size=` + fmt.Sprintf("%.2f", placement.Size) + `).
@@ -150,7 +206,8 @@ Respond with a strictly formatted, rich JSON object with this exact schema:
   "subject_details": {
     "identity": "Exhaustive description of subject, facial structure, gaze, haircut, costume, uniform collars, shoulder epaulets, cords, medals, ribbons",
     "wardrobe_material": "Detailed fabric types (heavy velvet, gold bullion embroidery, braided aguillette, silk sash, metallic badges)",
-    "color_scheme": "Color accents (navy blue, crimson scarlet, burnished gold, antique bronze)"
+    "color_scheme": "Color accents (navy blue, crimson scarlet, burnished gold, antique bronze)",
+    "protected_regions": "Face, eyes, hair, posture, and facial expression must remain 100% untouched"
   },
   "palette": ["#hex1", "#hex2", "#hex3", "#hex4", "#hex5"],
   "composition": {
@@ -175,7 +232,27 @@ Respond with a strictly formatted, rich JSON object with this exact schema:
   "generated_prompt": "Masterpiece portrait preserving the exact subject, posture, gold braided military uniform, and atmospheric lighting of the artwork with the QR code seamlessly woven into the embroidery and shadows"
 }`
 
-	userPrompt := "Analyze this reference image and provide the JSON style extraction for the " + regionName + " QR placement."
+	userPrompt := "Analyze this reference image and target region for QR embedding. Image 1 is the full artwork. "
+	userContents := []any{
+		map[string]any{"type": "text", "text": userPrompt},
+		map[string]any{
+			"type": "image_url",
+			"image_url": map[string]string{
+				"url": fmt.Sprintf("data:%s;base64,%s", mimeType, base64Img),
+			},
+		},
+	}
+	if patchBase64 != "" {
+		userContents = append(userContents,
+			map[string]any{"type": "text", "text": "Image 2 is the magnified crop of the target insertion region for micro-pixel analysis:"},
+			map[string]any{
+				"type": "image_url",
+				"image_url": map[string]string{
+					"url": fmt.Sprintf("data:image/jpeg;base64,%s", patchBase64),
+				},
+			},
+		)
+	}
 
 	requestBody := map[string]any{
 		"model": a.getModel(),
@@ -185,16 +262,8 @@ Respond with a strictly formatted, rich JSON object with this exact schema:
 				"content": systemInstruction,
 			},
 			{
-				"role": "user",
-				"content": []any{
-					map[string]any{"type": "text", "text": userPrompt},
-					map[string]any{
-						"type": "image_url",
-						"image_url": map[string]string{
-							"url": fmt.Sprintf("data:%s;base64,%s", mimeType, base64Img),
-						},
-					},
-				},
+				"role":    "user",
+				"content": userContents,
 			},
 		},
 		"temperature":     0.2,

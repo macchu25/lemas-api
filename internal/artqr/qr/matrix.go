@@ -23,9 +23,9 @@ func BuildControlCanvas(qrPNG []byte, placement model.Placement, canvasSize int)
 		return nil, err
 	}
 
-	// 1. Create solid white background canvas
+	// 1. Create neutral 128 gray background canvas (zero ControlNet bias outside QR region)
 	canvas := image.NewRGBA(image.Rect(0, 0, canvasSize, canvasSize))
-	draw.Draw(canvas, canvas.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
+	draw.Draw(canvas, canvas.Bounds(), &image.Uniform{color.RGBA{R: 128, G: 128, B: 128, A: 255}}, image.Point{}, draw.Src)
 
 	// 2. Calculate pixel coordinates
 	if !placement.IsValid() {

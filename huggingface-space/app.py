@@ -137,11 +137,11 @@ def generate(
 
     for generator in generators:
         if raw_ref_image is not None:
-            # 1. Preserve 100% of the original photo's dimensions (e.g. 768x1024 portrait)
+            # 1. Preserve 100% of original photo's dimensions (e.g. 676x940 portrait)
             orig_w, orig_h = raw_ref_image.size
             min_dim = min(orig_w, orig_h)
 
-            # 2. Calculate pixel coordinates on the native image
+            # 2. Calculate pixel coordinates on native image
             px = float(placement_x)
             py = float(placement_y)
             ps = float(placement_size)
@@ -154,40 +154,76 @@ def generate(
             px0 = max(0, min(orig_w - p_size, int(px * orig_w)))
             py0 = max(0, min(orig_h - p_size, int(py * orig_h)))
 
-            # 3. Crop patch from reference image
-            ref_patch = raw_ref_image.crop((px0, py0, px0 + p_size, py0 + p_size)).resize((768, 768), Image.Resampling.LANCZOS)
+            # 3. Context-Aware Patch Extraction:
+            # Add 20% margin around QR area so Stable Diffusion sees surrounding cloth/lighting/shadows
+            pad = int(p_size * 0.20)
+            x_start = max(0, px0 - pad)
+            y_start = max(0, py0 - pad)
+            x_end = min(orig_w, px0 + p_size + pad)
+            y_end = min(orig_h, py0 + p_size + pad)
+            crop_w = x_end - x_start
+            crop_h = y_end - y_start
 
-            # 4. Use pure high-contrast QR control directly on the cropped patch
-            ctrl_patch = control_image.resize((768, 768), Image.Resampling.NEAREST)
+            context_patch = raw_ref_image.crop((x_start, y_start, x_end, y_end))
 
-            # 5. Tailor patch prompt for seamless fabric/surface embroidery without hallucinating faces
-            patch_prompt = prompt + ", intricate geometric embroidery pattern, woven cloth texture, sharp contrast, masterwork craft"
-            patch_negative = negative_prompt + ", person, human face, eyes, head, body, low quality, deformed, watermark"
+            # 4. Zero-White-Box QR Control Canvas:
+            # Use neutral 128 gray background (NO white card frame, zero bias outside QR)
+            ctrl_canvas = Image.new("L", (crop_w, crop_h), 128)
 
-            # Diffuse ONLY that cropped patch with QR ControlNet
+            # Relative position of QR within context patch
+            qr_rel_x = px0 - x_start
+            qr_rel_y = py0 - y_start
+
+            # Soften QR inner data modules slightly while preserving crisp finder eye contrast
+            qr_scaled = control_image.convert("L").resize((p_size, p_size), Image.Resampling.NEAREST)
+
+            # Smoothly feather only the very outer boundary so there is zero square card border
+            qr_edge_mask = Image.new("L", (p_size, p_size), 255)
+            draw_edge = ImageDraw.Draw(qr_edge_mask)
+            inset = max(2, p_size // 36)
+            draw_edge.rectangle([inset, inset, p_size - inset, p_size - inset], fill=255)
+            qr_edge_mask = qr_edge_mask.filter(ImageFilter.GaussianBlur(radius=inset))
+
+            # Paste QR onto neutral canvas with feathered boundary
+            ctrl_canvas.paste(qr_scaled, (qr_rel_x, qr_rel_y), qr_edge_mask)
+
+            # Resize to standard diffusion resolution 768x768
+            context_patch_768 = context_patch.resize((768, 768), Image.Resampling.LANCZOS)
+            ctrl_canvas_768 = ctrl_canvas.resize((768, 768), Image.Resampling.LANCZOS)
+
+            # 5. Tailor patch prompt
+            patch_prompt = prompt + ", intricate woven embroidery texture, gold bullion thread relief, fine fabric grain, chiaroscuro lighting, masterpiece craftsmanship"
+            patch_negative = negative_prompt + ", white border, white card, square border, sticker, watermark, label, face, eyes, human, deformed, low quality"
+
+            # 6. Diffuse with optimal guidance timing
+            # Setting control_guidance_end to 0.91 locks in scanner-verified finder patterns
             patch_result = img2img_pipe(
                 prompt=patch_prompt,
                 negative_prompt=patch_negative,
-                image=ref_patch,
-                control_image=ctrl_patch,
-                strength=0.65,
+                image=context_patch_768,
+                control_image=ctrl_canvas_768,
+                strength=0.68,
                 num_inference_steps=steps,
-                guidance_scale=8.5,
-                controlnet_conditioning_scale=max(1.35, conditioning_scale),
+                guidance_scale=8.0,
+                controlnet_conditioning_scale=min(1.48, max(1.30, conditioning_scale)),
                 control_guidance_start=0.0,
-                control_guidance_end=0.95,
+                control_guidance_end=0.91,
                 generator=generator,
             ).images[0]
 
-            # 6. Scale diffused patch back to exact target dimensions
-            diffused_patch_resized = patch_result.resize((p_size, p_size), Image.Resampling.LANCZOS)
+            # 7. Scale diffused patch back to exact context patch dimensions
+            diffused_patch_orig = patch_result.resize((crop_w, crop_h), Image.Resampling.LANCZOS)
 
-            # 7. Create seamless alpha feather mask
-            feather_mask = create_feathered_mask(p_size, p_size, feather_px=max(8, p_size // 18))
+            # 8. Create seamless alpha feather mask centered on the QR region
+            comp_mask = Image.new("L", (crop_w, crop_h), 0)
+            comp_draw = ImageDraw.Draw(comp_mask)
+            feather_r = max(12, p_size // 14)
+            comp_draw.rectangle([qr_rel_x - 2, qr_rel_y - 2, qr_rel_x + p_size + 2, qr_rel_y + p_size + 2], fill=255)
+            comp_mask = comp_mask.filter(ImageFilter.GaussianBlur(radius=feather_r))
 
-            # 8. Composite the blended patch BACK into the 100% UNTOUCHED native aspect-ratio photo
+            # 9. Composite back into 100% UNTOUCHED original photo
             final_composite = raw_ref_image.copy()
-            final_composite.paste(diffused_patch_resized, (px0, py0), feather_mask)
+            final_composite.paste(diffused_patch_orig, (x_start, y_start), comp_mask)
 
             images.append(final_composite)
         else:
@@ -199,9 +235,9 @@ def generate(
                 image=control_image,
                 num_inference_steps=steps,
                 guidance_scale=8.0,
-                controlnet_conditioning_scale=conditioning_scale,
+                controlnet_conditioning_scale=min(1.35, max(1.15, conditioning_scale)),
                 control_guidance_start=0.0,
-                control_guidance_end=0.88,
+                control_guidance_end=0.86,
                 generator=generator,
                 width=1024,
                 height=1024,

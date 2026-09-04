@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	qrcode "github.com/skip2/go-qrcode"
 	"xkiro-backend/internal/artqr/model"
 	"xkiro-backend/internal/artqr/prompt"
 	"xkiro-backend/internal/artqr/provider"
@@ -28,29 +29,36 @@ type Service struct {
 }
 
 func NewService() *Service {
-	presetsMap := make(map[string]model.ArtQRPreset)
-	for _, p := range prompt.DefaultPresets {
-		presetsMap[p.ID] = p
-		presetsMap[p.Slug] = p
+	p := provider.NewHuggingFaceProvider()
+	v := vision.NewXKiroVisionAnalyzer()
+
+	presetMap := make(map[string]model.ArtQRPreset)
+	for _, pr := range prompt.DefaultPresets {
+		presetMap[pr.ID] = pr
+		presetMap[pr.Slug] = pr
 	}
 
 	return &Service{
 		jobs:      make(map[string]*model.ArtQRJob),
-		presets:   presetsMap,
-		analyzer:  vision.NewXKiroVisionAnalyzer(),
-		provider:  provider.NewHuggingFaceProvider(),
-		workerSem: make(chan struct{}, 3),
+		presets:   presetMap,
+		analyzer:  v,
+		provider:  p,
+		workerSem: make(chan struct{}, 2),
 	}
+}
+
+func (s *Service) ListPresets() []model.ArtQRPreset {
+	return prompt.DefaultPresets
 }
 
 func (s *Service) GetPresets() []model.ArtQRPreset {
 	return prompt.DefaultPresets
 }
 
-func (s *Service) GetPreset(id string) (*model.ArtQRPreset, bool) {
+func (s *Service) GetPreset(idOrSlug string) (*model.ArtQRPreset, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	p, ok := s.presets[id]
+	p, ok := s.presets[idOrSlug]
 	if !ok {
 		return nil, false
 	}
@@ -60,12 +68,11 @@ func (s *Service) GetPreset(id string) (*model.ArtQRPreset, bool) {
 func (s *Service) GetJob(jobID string) (*model.ArtQRJob, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	job, exists := s.jobs[jobID]
-	if !exists {
+	j, ok := s.jobs[jobID]
+	if !ok {
 		return nil, false
 	}
-	snap := job.Snapshot()
-	return &snap, true
+	return j, true
 }
 
 type CreateJobParams struct {
@@ -96,8 +103,17 @@ func (s *Service) CreateJob(ctx context.Context, params CreateJobParams) (*model
 		return nil, fmt.Errorf("không thể giải mã QR: %w", err)
 	}
 
-	// 2. Build 1024x1024 placement control canvas
-	controlCanvas, err := qr.BuildControlCanvas(decoded.PNGBytes, params.Placement, 1024)
+	// 2. Generate clean borderless QR code (Level H) for seamless organic embedding
+	sourceQRPNG := decoded.PNGBytes
+	if cleanQR, qErr := qrcode.New(decoded.Payload, qrcode.Highest); qErr == nil {
+		cleanQR.DisableBorder = true
+		if cleanBytes, err := cleanQR.PNG(512); err == nil && len(cleanBytes) > 0 {
+			sourceQRPNG = cleanBytes
+		}
+	}
+
+	// 3. Build 1024x1024 placement control canvas
+	controlCanvas, err := qr.BuildControlCanvas(sourceQRPNG, params.Placement, 1024)
 	if err != nil {
 		return nil, fmt.Errorf("không thể khởi tạo vùng định vị QR: %w", err)
 	}
@@ -118,7 +134,7 @@ func (s *Service) CreateJob(ctx context.Context, params CreateJobParams) (*model
 		MaxAttempts:         4,
 		Attempts:            0,
 		ControlCanvasPNG:    controlCanvas,
-		SourceQRPNG:         decoded.PNGBytes,
+		SourceQRPNG:         sourceQRPNG,
 		ReferenceImageJPEG:  params.ReferenceBytes,
 		Images:              make([]model.OutputImage, 0),
 		CreatedAt:           now,
