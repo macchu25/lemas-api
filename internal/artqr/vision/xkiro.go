@@ -275,6 +275,11 @@ Respond with a strictly formatted, rich JSON object with this exact schema:
 			continue
 		}
 
+		result.RawJSON = rawJSON
+		if result.PatchPrompt == "" {
+			result.PatchPrompt = fmt.Sprintf("Intricate %s texture, woven embroidery, subtle fabric folds, dramatic lighting highlights, masterwork craft, sharp contrast", result.Texture)
+		}
+
 		return &result, nil
 	}
 
