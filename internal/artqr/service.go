@@ -43,7 +43,7 @@ func NewService() *Service {
 		presets:   presetMap,
 		analyzer:  v,
 		provider:  p,
-		workerSem: make(chan struct{}, 2),
+		workerSem: make(chan struct{}, 4),
 	}
 }
 
@@ -196,10 +196,13 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 	job.Prompt = finalPrompt
 	job.NegativePrompt = negativePrompt
 
-	// Step C: Adaptive conditioning search (1.10 -> 1.50)
-	conditioningScales := []float64{1.10, 1.20, 1.30, 1.40, 1.50}
+	// Step C: Adaptive conditioning search starting at optimal scannable scale
+	conditioningScales := []float64{1.35, 1.45, 1.25}
 	job.MaxAttempts = len(conditioningScales)
 	targetOutputs := 1
+
+	log.Printf("[ArtQR] [%s] Starting job execution: max_attempts=%d, placement=(%.2f, %.2f, %.2f)",
+		job.ID, job.MaxAttempts, job.Placement.X, job.Placement.Y, job.Placement.Size)
 
 	var bestCandidate *provider.GeneratedImage
 	var bestScale float64
@@ -223,6 +226,9 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 		}
 		currentScale := conditioningScales[scaleIdx]
 		seed := int(time.Now().UnixNano()&0x7fffffff) + rand.Intn(10000)
+
+		log.Printf("[ArtQR] [%s] Attempt %d/%d: conditioning_scale=%.2f, seed=%d",
+			job.ID, attempt, job.MaxAttempts, currentScale, seed)
 
 		qrControlBytes := job.ControlCanvasPNG
 		if len(job.ReferenceImageJPEG) > 0 && len(job.SourceQRPNG) > 0 {
@@ -248,6 +254,7 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 		// Raw AI diffusion execution
 		candidates, err := s.provider.Generate(ctx, req)
 		if err != nil {
+			log.Printf("[ArtQR] [%s] Attempt %d AI provider error: %v", job.ID, attempt, err)
 			if attempt == job.MaxAttempts && len(job.Images) == 0 {
 				job.SetError("Không thể tạo ảnh từ AI Provider: " + err.Error())
 				return
@@ -264,6 +271,9 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 			bestScale = currentScale
 
 			vResult := qr.ValidateGeneratedQR(cand.PNGBytes, job.OriginalPayload)
+			log.Printf("[ArtQR] [%s] Attempt %d validation result: valid=%v, payloadMatch=%v",
+				job.ID, attempt, vResult.Valid, vResult.PayloadHash == job.OriginalPayloadHash)
+
 			if vResult.Valid {
 				job.AddOutput(model.OutputImage{
 					URL:                cand.URL,
@@ -288,6 +298,8 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 
 	// Fallback to highest conditioning scale candidate if strict decoder struggled with artistic strokes
 	if len(job.Images) == 0 && bestCandidate != nil {
+		log.Printf("[ArtQR] [%s] No candidates passed strict decoder. Falling back to best artistic candidate (scale %.2f)",
+			job.ID, bestScale)
 		job.AddOutput(model.OutputImage{
 			URL:                bestCandidate.URL,
 			Verified:           false,
@@ -299,7 +311,9 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 
 	if len(job.Images) > 0 {
 		job.UpdateStatus("completed", 100)
+		log.Printf("[ArtQR] [%s] Job COMPLETED successfully with %d images", job.ID, len(job.Images))
 	} else {
 		job.SetError("Không thể tạo Art QR sau các lần thử. Hãy thử lại hoặc chọn phong cách khác.")
+		log.Printf("[ArtQR] [%s] Job FAILED: %s", job.ID, job.Error)
 	}
 }
