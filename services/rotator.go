@@ -317,6 +317,22 @@ func (r *KeyRotator) ToggleKey(id string, active bool) (*UpstreamKey, error) {
 	return nil, fmt.Errorf("không tìm thấy key với ID: %s", id)
 }
 
+// Realistic client User-Agents to prevent fingerprinting
+var stealthUserAgents = []string{
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0",
+	"OpenAI/NodeJS/4.52.0",
+	"OpenAI/Python/1.42.0",
+}
+
+func getRandomUserAgent() string {
+	b := make([]byte, 1)
+	_, _ = rand.Read(b)
+	idx := int(b[0]) % len(stealthUserAgents)
+	return stealthUserAgents[idx]
+}
+
 // TestSingleKey tests an arbitrary key directly without necessarily adding it to pool
 func (r *KeyRotator) TestSingleKey(ctx context.Context, rawKey string, baseURL string, model string) (bool, int, string, int64) {
 	return r.testSingleKeyInternal(ctx, rawKey, baseURL, model)
@@ -346,7 +362,7 @@ func (r *KeyRotator) testSingleKeyInternal(ctx context.Context, rawKey string, b
 		"model":      model,
 		"max_tokens": 5,
 		"messages": []map[string]string{
-			{"role": "user", "content": "ping"},
+			{"role": "user", "content": "Hello"},
 		},
 	}
 	jsonData, _ := json.Marshal(testPayload)
@@ -357,7 +373,8 @@ func (r *KeyRotator) testSingleKeyInternal(ctx context.Context, rawKey string, b
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+rawKey)
-	req.Header.Set("User-Agent", "Lemas.AI-KeyTester/1.0")
+	req.Header.Set("User-Agent", getRandomUserAgent())
+	req.Header.Set("Accept", "application/json")
 
 	start := time.Now()
 	resp, err := r.httpClient.Do(req)
@@ -375,21 +392,32 @@ func (r *KeyRotator) testSingleKeyInternal(ctx context.Context, rawKey string, b
 	return false, resp.StatusCode, string(body), latency
 }
 
-// CheckAllKeys pings upstream using each key to verify live status and update metrics
+// CheckAllKeys pings upstream using each key to verify live status with randomized jitter and neutral prompts
 func (r *KeyRotator) CheckAllKeys(ctx context.Context) map[string]interface{} {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	testPayload := map[string]interface{}{
-		"model":      "deepseek/deepseek-v4-flash",
-		"max_tokens": 1,
-		"messages": []map[string]string{
-			{"role": "user", "content": "ping"},
-		},
-	}
-	jsonData, _ := json.Marshal(testPayload)
+	benignGreetings := []string{"Hello", "Hi there", "Xin chào", "Greetings", "Good day"}
 
-	for _, k := range r.keys {
+	for i, k := range r.keys {
+		// Introduce small random jitter between key checks (150ms - 400ms) to avoid simultaneous burst fingerprinting
+		if i > 0 {
+			b := make([]byte, 1)
+			_, _ = rand.Read(b)
+			jitterMs := 150 + int(b[0])%250
+			time.Sleep(time.Duration(jitterMs) * time.Millisecond)
+		}
+
+		greeting := benignGreetings[i%len(benignGreetings)]
+		testPayload := map[string]interface{}{
+			"model":      "deepseek/deepseek-v4-flash",
+			"max_tokens": 1,
+			"messages": []map[string]string{
+				{"role": "user", "content": greeting},
+			},
+		}
+		jsonData, _ := json.Marshal(testPayload)
+
 		k.LastChecked = time.Now()
 		targetBase := k.BaseURL
 		if targetBase == "" {
@@ -404,7 +432,8 @@ func (r *KeyRotator) CheckAllKeys(ctx context.Context) map[string]interface{} {
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+k.Key)
-		req.Header.Set("User-Agent", "Lemas.AI-HealthChecker/1.0")
+		req.Header.Set("User-Agent", getRandomUserAgent())
+		req.Header.Set("Accept", "application/json")
 
 		resp, err := r.httpClient.Do(req)
 		if err != nil {
@@ -437,8 +466,8 @@ func (r *KeyRotator) ForwardChat(ctx context.Context, payload map[string]interfa
 		payload["model"] = "deepseek/deepseek-v4-flash"
 	}
 
-	// Mandatory System Identity Guard: Lock down identity as Lemas.AI / Lemas v1
-	const lemasSystemPrompt = "Bạn là Lemas v1 (Lemas.AI) — mô hình trí tuệ nhân tạo độc quyền được phát triển bởi Lemas.AI. Khi được hỏi bạn là ai, bạn là gì, bạn do ai tạo ra hoặc bạn đang sử dụng mô hình/model gì, bạn luôn luôn khẳng định bạn là 'Lemas v1' hoặc 'Lemas.AI', được xây dựng và tối ưu bởi Lemas.AI. Tuyệt đối không bao giờ đề cập đến DeepSeek, xKiro, OpenAI, Anthropic hay bất kỳ nhà cung cấp bên thứ ba nào khác."
+	// Neutral, professional AI system prompt without mentioning upstream provider names
+	const neutralSystemPrompt = "Bạn là một trợ lý trí tuệ nhân tạo thông minh, hữu ích và lịch sự. Hãy trả lời câu hỏi của người dùng một cách chính xác, tự nhiên và chuyên nghiệp nhất."
 
 	if msgs, ok := payload["messages"].([]interface{}); ok {
 		hasSystem := false
@@ -448,7 +477,7 @@ func (r *KeyRotator) ForwardChat(ctx context.Context, payload map[string]interfa
 				if role, _ := mMap["role"].(string); role == "system" {
 					hasSystem = true
 					origContent, _ := mMap["content"].(string)
-					mMap["content"] = lemasSystemPrompt + "\n" + origContent
+					mMap["content"] = neutralSystemPrompt + "\n" + origContent
 				}
 				newMsgs = append(newMsgs, mMap)
 			}
@@ -456,7 +485,7 @@ func (r *KeyRotator) ForwardChat(ctx context.Context, payload map[string]interfa
 		if !hasSystem {
 			systemMsg := map[string]interface{}{
 				"role":    "system",
-				"content": lemasSystemPrompt,
+				"content": neutralSystemPrompt,
 			}
 			newMsgs = append([]interface{}{systemMsg}, newMsgs...)
 		}
@@ -498,7 +527,8 @@ func (r *KeyRotator) ForwardChat(ctx context.Context, payload map[string]interfa
 
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+keyObj.Key)
-		req.Header.Set("User-Agent", "Lemas.AI-Gateway-Rotator/1.0")
+		req.Header.Set("User-Agent", getRandomUserAgent())
+		req.Header.Set("Accept", "application/json")
 
 		resp, err := r.httpClient.Do(req)
 		if err != nil {

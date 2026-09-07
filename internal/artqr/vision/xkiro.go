@@ -295,6 +295,8 @@ Respond with a strictly formatted, rich JSON object with this exact schema:
 
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+key)
+		req.Header.Set("User-Agent", "OpenAI/Python/1.42.0")
+		req.Header.Set("Accept", "application/json")
 
 		resp, doErr := client.Do(req)
 		if doErr != nil {

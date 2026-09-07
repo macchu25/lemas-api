@@ -62,7 +62,7 @@ func main() {
 	// AI Gateway Endpoints (OpenAI & Anthropic Compatible)
 	mux.HandleFunc("/v1/chat/completions", handlers.ChatCompletionsHandler)
 	mux.HandleFunc("/v1/messages", handlers.MessagesHandler)
-	mux.HandleFunc("/api/rotator/stats", handlers.RotatorStatsHandler)
+	mux.HandleFunc("/api/rotator/stats", handlers.AdminAuthMiddleware(handlers.RotatorStatsHandler))
 
 	// Admin Portal Endpoints (Protected with AdminAuthMiddleware)
 	mux.HandleFunc("/api/admin/login", handlers.AdminLoginHandler)
