@@ -113,13 +113,7 @@ func InitKeyRotator() *KeyRotator {
 		}
 
 		log.Printf("[Rotator] 🚀 Initialized Brain Engine with %d upstream rotating API keys (Base: %s)", len(rawKeys), baseURL)
-
-		// Perform asynchronous background health check on startup
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
-			defer cancel()
-			DefaultRotator.CheckAllKeys(ctx)
-		}()
+		log.Println("[Rotator] 🛡️ Stealth Mode active: Passive on-demand health tracking enabled (Startup bulk ping disabled)")
 	})
 
 	return DefaultRotator
@@ -460,10 +454,14 @@ func (r *KeyRotator) CheckAllKeys(ctx context.Context) map[string]interface{} {
 }
 
 func (r *KeyRotator) ForwardChat(ctx context.Context, payload map[string]interface{}) (map[string]interface{}, error) {
-	// Normalize model to active supported upstream model
+	// Respect the model requested by the user. Only apply a default if empty or 'default'
 	modelStr, _ := payload["model"].(string)
-	if modelStr == "" || strings.HasPrefix(modelStr, "lemas") || strings.HasPrefix(modelStr, "deepseek") {
+	modelStr = strings.TrimSpace(modelStr)
+	if modelStr == "" || modelStr == "default" || modelStr == "lemas-1.0" {
 		payload["model"] = "deepseek/deepseek-v4-flash"
+	} else {
+		// Use exact model requested by user (e.g. deepseek/deepseek-r1, openai/gpt-4o, claude-3-7-sonnet, etc.)
+		payload["model"] = modelStr
 	}
 
 	// Neutral, professional AI system prompt without mentioning upstream provider names

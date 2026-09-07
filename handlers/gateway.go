@@ -175,7 +175,7 @@ func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Model == "" {
-		req.Model = "deepseek/deepseek-r1"
+		req.Model = "lemas-1.0"
 	}
 
 	rotator := services.InitKeyRotator()
