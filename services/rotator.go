@@ -3,6 +3,8 @@ package services
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,7 +18,11 @@ import (
 )
 
 type UpstreamKey struct {
-	Key            string    `json:"key"`
+	ID             string    `json:"id"`
+	Key            string    `json:"-"` // SECURITY: NEVER serialized into JSON response!
+	MaskedKey      string    `json:"key_masked"`
+	Provider       string    `json:"provider"`
+	BaseURL        string    `json:"base_url,omitempty"`
 	RequestCount   uint64    `json:"request_count"`
 	ErrorCount     uint64    `json:"error_count"`
 	IsActive       bool      `json:"is_active"`
@@ -24,6 +30,7 @@ type UpstreamKey struct {
 	LastError      string    `json:"last_error,omitempty"`
 	LastStatusCode int       `json:"last_status_code,omitempty"`
 	LastChecked    time.Time `json:"last_checked"`
+	AddedAt        time.Time `json:"added_at"`
 }
 
 type KeyRotator struct {
@@ -38,6 +45,23 @@ var (
 	DefaultRotator *KeyRotator
 	once           sync.Once
 )
+
+func MaskKey(k string) string {
+	k = strings.TrimSpace(k)
+	if len(k) <= 8 {
+		if len(k) <= 4 {
+			return "••••"
+		}
+		return k[:2] + "••••" + k[len(k)-2:]
+	}
+	return k[:6] + "••••••••" + k[len(k)-4:]
+}
+
+func randomID() string {
+	b := make([]byte, 6)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
 
 func InitKeyRotator() *KeyRotator {
 	once.Do(func() {
@@ -67,10 +91,15 @@ func InitKeyRotator() *KeyRotator {
 		keyObjects := make([]*UpstreamKey, len(rawKeys))
 		for i, k := range rawKeys {
 			keyObjects[i] = &UpstreamKey{
+				ID:          fmt.Sprintf("key-%d", i+1),
 				Key:         k,
+				MaskedKey:   MaskKey(k),
+				Provider:    "xKiro Upstream",
+				BaseURL:     baseURL,
 				IsActive:    true,
 				LastUsed:    now,
 				LastChecked: now,
+				AddedAt:     now,
 			}
 		}
 
@@ -87,7 +116,7 @@ func InitKeyRotator() *KeyRotator {
 
 		// Perform asynchronous background health check on startup
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 			defer cancel()
 			DefaultRotator.CheckAllKeys(ctx)
 		}()
@@ -115,6 +144,19 @@ func (r *KeyRotator) GetPoolStats() map[string]interface{} {
 	return r.getPoolStatsLocked()
 }
 
+func (r *KeyRotator) GetAllKeys() []*UpstreamKey {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	res := make([]*UpstreamKey, len(r.keys))
+	for i, k := range r.keys {
+		copyKey := *k
+		copyKey.Key = "" // Security: Ensure raw key is wiped
+		res[i] = &copyKey
+	}
+	return res
+}
+
 func (r *KeyRotator) getPoolStatsLocked() map[string]interface{} {
 	statsList := make([]map[string]interface{}, len(r.keys))
 	activeCount := 0
@@ -137,14 +179,17 @@ func (r *KeyRotator) getPoolStatsLocked() map[string]interface{} {
 			lastCheckedStr = k.LastChecked.Format(time.RFC3339)
 		}
 
-		masked := k.Key
-		if len(k.Key) > 13 {
-			masked = k.Key[:9] + "••••••••" + k.Key[len(k.Key)-4:]
+		var addedAtStr string
+		if !k.AddedAt.IsZero() {
+			addedAtStr = k.AddedAt.Format(time.RFC3339)
 		}
 
 		statsList[i] = map[string]interface{}{
+			"id":               k.ID,
 			"index":            i + 1,
-			"key_masked":       masked,
+			"key_masked":       k.MaskedKey,
+			"provider":         k.Provider,
+			"base_url":         k.BaseURL,
 			"request_count":    atomic.LoadUint64(&k.RequestCount),
 			"error_count":      atomic.LoadUint64(&k.ErrorCount),
 			"is_active":        k.IsActive,
@@ -152,6 +197,7 @@ func (r *KeyRotator) getPoolStatsLocked() map[string]interface{} {
 			"last_checked":     lastCheckedStr,
 			"last_error":       k.LastError,
 			"last_status_code": k.LastStatusCode,
+			"added_at":         addedAtStr,
 		}
 	}
 
@@ -163,6 +209,170 @@ func (r *KeyRotator) getPoolStatsLocked() map[string]interface{} {
 		"keys":          statsList,
 		"rotation_mode": "Smart Round-Robin with Live Health Guard",
 	}
+}
+
+// AddKey registers a new API key to the active rotation pool
+func (r *KeyRotator) AddKey(ctx context.Context, rawKey string, provider string, customBaseURL string, testFirst bool) (*UpstreamKey, error) {
+	rawKey = strings.TrimSpace(rawKey)
+	if rawKey == "" {
+		return nil, fmt.Errorf("API Key không được để trống")
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for _, existing := range r.keys {
+		if existing.Key == rawKey {
+			return nil, fmt.Errorf("API Key này đã tồn tại trong hệ thống (ID: %s)", existing.ID)
+		}
+	}
+
+	targetBaseURL := strings.TrimRight(strings.TrimSpace(customBaseURL), "/")
+	if targetBaseURL == "" {
+		targetBaseURL = r.baseURL
+	}
+
+	if provider == "" {
+		if strings.Contains(targetBaseURL, "deepseek.com") {
+			provider = "DeepSeek Official"
+		} else if strings.Contains(targetBaseURL, "openrouter.ai") {
+			provider = "OpenRouter"
+		} else if strings.Contains(targetBaseURL, "openai.com") {
+			provider = "OpenAI"
+		} else if strings.Contains(targetBaseURL, "groq.com") {
+			provider = "Groq"
+		} else if strings.Contains(targetBaseURL, "xkiro.com") {
+			provider = "xKiro"
+		} else {
+			provider = "Custom Provider"
+		}
+	}
+
+	now := time.Now()
+	newKey := &UpstreamKey{
+		ID:          "key-" + randomID(),
+		Key:         rawKey,
+		MaskedKey:   MaskKey(rawKey),
+		Provider:    provider,
+		BaseURL:     targetBaseURL,
+		IsActive:    true,
+		LastUsed:    now,
+		LastChecked: now,
+		AddedAt:     now,
+	}
+
+	if testFirst {
+		// Test the key against upstream
+		success, status, msg, _ := r.testSingleKeyInternal(ctx, rawKey, targetBaseURL, "")
+		newKey.LastStatusCode = status
+		newKey.LastError = msg
+		newKey.IsActive = success
+		if !success {
+			return nil, fmt.Errorf("kiểm tra API key thất bại (HTTP %d): %s", status, msg)
+		}
+	}
+
+	r.keys = append(r.keys, newKey)
+	log.Printf("[Rotator] 🔑 Added new Upstream Key %s (%s) to pool. Total keys: %d", newKey.MaskedKey, newKey.Provider, len(r.keys))
+
+	copyKey := *newKey
+	copyKey.Key = "" // Wipe raw key in return
+	return &copyKey, nil
+}
+
+// RemoveKey deletes a key by its unique ID
+func (r *KeyRotator) RemoveKey(id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	idx := -1
+	for i, k := range r.keys {
+		if k.ID == id {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return fmt.Errorf("không tìm thấy key với ID: %s", id)
+	}
+
+	r.keys = append(r.keys[:idx], r.keys[idx+1:]...)
+	log.Printf("[Rotator] 🗑️ Removed Upstream Key ID %s from pool. Remaining: %d", id, len(r.keys))
+	return nil
+}
+
+// ToggleKey activates or deactivates a key without deleting it
+func (r *KeyRotator) ToggleKey(id string, active bool) (*UpstreamKey, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for _, k := range r.keys {
+		if k.ID == id {
+			k.IsActive = active
+			copyKey := *k
+			copyKey.Key = ""
+			return &copyKey, nil
+		}
+	}
+	return nil, fmt.Errorf("không tìm thấy key với ID: %s", id)
+}
+
+// TestSingleKey tests an arbitrary key directly without necessarily adding it to pool
+func (r *KeyRotator) TestSingleKey(ctx context.Context, rawKey string, baseURL string, model string) (bool, int, string, int64) {
+	return r.testSingleKeyInternal(ctx, rawKey, baseURL, model)
+}
+
+func (r *KeyRotator) testSingleKeyInternal(ctx context.Context, rawKey string, baseURL string, model string) (bool, int, string, int64) {
+	rawKey = strings.TrimSpace(rawKey)
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if baseURL == "" {
+		baseURL = r.baseURL
+	}
+	if model == "" {
+		if strings.Contains(baseURL, "deepseek.com") {
+			model = "deepseek-chat"
+		} else if strings.Contains(baseURL, "openai.com") {
+			model = "gpt-4o-mini"
+		} else if strings.Contains(baseURL, "openrouter.ai") {
+			model = "deepseek/deepseek-chat"
+		} else if strings.Contains(baseURL, "groq.com") {
+			model = "llama-3.3-70b-versatile"
+		} else {
+			model = "deepseek/deepseek-v4-flash"
+		}
+	}
+
+	testPayload := map[string]interface{}{
+		"model":      model,
+		"max_tokens": 5,
+		"messages": []map[string]string{
+			{"role": "user", "content": "ping"},
+		},
+	}
+	jsonData, _ := json.Marshal(testPayload)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/chat/completions", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return false, 0, err.Error(), 0
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	req.Header.Set("User-Agent", "Lemas.AI-KeyTester/1.0")
+
+	start := time.Now()
+	resp, err := r.httpClient.Do(req)
+	latency := time.Since(start).Milliseconds()
+	if err != nil {
+		return false, 0, fmt.Sprintf("Lỗi kết nối mạng: %v", err), latency
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return true, resp.StatusCode, "Kết nối thành công! API Key hoạt động bình thường.", latency
+	}
+
+	return false, resp.StatusCode, string(body), latency
 }
 
 // CheckAllKeys pings upstream using each key to verify live status and update metrics
@@ -181,7 +391,12 @@ func (r *KeyRotator) CheckAllKeys(ctx context.Context) map[string]interface{} {
 
 	for _, k := range r.keys {
 		k.LastChecked = time.Now()
-		req, err := http.NewRequestWithContext(ctx, "POST", r.baseURL+"/chat/completions", bytes.NewBuffer(jsonData))
+		targetBase := k.BaseURL
+		if targetBase == "" {
+			targetBase = r.baseURL
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "POST", targetBase+"/chat/completions", bytes.NewBuffer(jsonData))
 		if err != nil {
 			k.LastError = err.Error()
 			k.IsActive = false
@@ -269,7 +484,12 @@ func (r *KeyRotator) ForwardChat(ctx context.Context, payload map[string]interfa
 		keyObj.LastUsed = time.Now()
 		keyObj.LastChecked = time.Now()
 
-		req, err := http.NewRequestWithContext(ctx, "POST", r.baseURL+"/chat/completions", bytes.NewBuffer(jsonData))
+		targetBase := keyObj.BaseURL
+		if targetBase == "" {
+			targetBase = r.baseURL
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "POST", targetBase+"/chat/completions", bytes.NewBuffer(jsonData))
 		if err != nil {
 			lastErr = err
 			keyObj.LastError = err.Error()

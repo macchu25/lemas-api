@@ -460,3 +460,150 @@ func formatTokens(n int64) string {
 	}
 	return out
 }
+
+// POST /api/admin/rotator/test-key
+func AdminTestUpstreamKeyHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Key     string `json:"key"`
+		BaseURL string `json:"base_url"`
+		Model   string `json:"model"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json request"}`, http.StatusBadRequest)
+		return
+	}
+
+	rotator := services.InitKeyRotator()
+	success, statusCode, message, latencyMs := rotator.TestSingleKey(r.Context(), req.Key, req.BaseURL, req.Model)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":     success,
+		"status_code": statusCode,
+		"message":     message,
+		"latency_ms":  latencyMs,
+	})
+}
+
+// GET /api/admin/rotator/keys
+func AdminListUpstreamKeysHandler(w http.ResponseWriter, r *http.Request) {
+	rotator := services.InitKeyRotator()
+	keys := rotator.GetAllKeys()
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"keys":    keys,
+	})
+}
+
+// POST /api/admin/rotator/keys/add
+func AdminAddUpstreamKeyHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Key       string `json:"key"`
+		Provider  string `json:"provider"`
+		BaseURL   string `json:"base_url"`
+		TestFirst bool   `json:"test_first"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json request"}`, http.StatusBadRequest)
+		return
+	}
+
+	rotator := services.InitKeyRotator()
+	created, err := rotator.AddKey(r.Context(), req.Key, req.Provider, req.BaseURL, req.TestFirst)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"key":     created,
+		"message": "Đã thêm Upstream Key an toàn vào bể xoay tua!",
+	})
+}
+
+// POST /api/admin/rotator/keys/delete
+func AdminDeleteUpstreamKeyHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json request"}`, http.StatusBadRequest)
+		return
+	}
+
+	rotator := services.InitKeyRotator()
+	if err := rotator.RemoveKey(req.ID); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "Đã xóa Upstream Key khỏi bể xoay tua.",
+	})
+}
+
+// POST /api/admin/rotator/keys/toggle
+func AdminToggleUpstreamKeyHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		ID     string `json:"id"`
+		Active bool   `json:"active"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json request"}`, http.StatusBadRequest)
+		return
+	}
+
+	rotator := services.InitKeyRotator()
+	updated, err := rotator.ToggleKey(req.ID, req.Active)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"key":     updated,
+	})
+}
