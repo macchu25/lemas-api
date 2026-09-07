@@ -42,11 +42,8 @@ func GenerateArtQRHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 10MB upload limit
-	if err := r.ParseMultipartForm(10 << 20); err != nil {
-		jsonError(w, "Dữ liệu tải lên không hợp lệ: "+err.Error(), http.StatusBadRequest)
-		return
-	}
+	jsonError(w, "Chức năng Art QR hiện đang tạm khóa để bảo trì và nâng cấp lên mô hình thế hệ mới.", http.StatusServiceUnavailable)
+	return
 
 	// 1. Extract QR image (Required)
 	qrFile, _, err := r.FormFile("qr_image")
@@ -74,25 +71,38 @@ func GenerateArtQRHandler(w http.ResponseWriter, r *http.Request) {
 	customPrompt := strings.TrimSpace(r.FormValue("custom_prompt"))
 
 	// 4. Extract & Validate Placement
+	hasCustomPlacement := false
 	placement := model.DefaultPlacement()
 	if rawPlacement := r.FormValue("placement"); rawPlacement != "" {
-		_ = json.Unmarshal([]byte(rawPlacement), &placement)
+		if err := json.Unmarshal([]byte(rawPlacement), &placement); err == nil && placement.IsValid() {
+			hasCustomPlacement = true
+		}
 	} else {
 		// Fallback to individual form fields
 		if xStr := r.FormValue("placement_x"); xStr != "" {
 			if val, err := strconv.ParseFloat(xStr, 64); err == nil {
 				placement.X = val
+				hasCustomPlacement = true
 			}
 		}
 		if yStr := r.FormValue("placement_y"); yStr != "" {
 			if val, err := strconv.ParseFloat(yStr, 64); err == nil {
 				placement.Y = val
+				hasCustomPlacement = true
 			}
 		}
 		if sizeStr := r.FormValue("placement_size"); sizeStr != "" {
 			if val, err := strconv.ParseFloat(sizeStr, 64); err == nil {
 				placement.Size = val
+				hasCustomPlacement = true
 			}
+		}
+	}
+
+	// If no explicit placement was supplied, and a preset with custom placement exists, use preset's placement
+	if !hasCustomPlacement && presetID != "" {
+		if p, ok := defaultArtQRService.GetPreset(presetID); ok && p != nil && p.Placement != nil && p.Placement.IsValid() {
+			placement = *p.Placement
 		}
 	}
 
@@ -165,7 +175,7 @@ func AnalyzeStyleHandler(w http.ResponseWriter, r *http.Request) {
 			"palette":  []string{"#8b0000", "#ffd700", "#1a202c", "#f5d0a9"},
 			"lighting": "Ánh sáng studio cinematic",
 			"texture":  "Vân vải & chi tiết tự nhiên",
-			"prompt":   "Masterpiece portrait preserving the exact subject, clothing, and background of the image with the QR code seamlessly integrated",
+			"prompt":   "Masterpiece portrait preserving the exact subject, clothing, and background of the image with ornate golden bullion embroidery cords and brass medals",
 		})
 		return
 	}

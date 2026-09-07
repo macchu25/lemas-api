@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	_ "image/gif"
 	"image/jpeg"
 	_ "image/png"
+	_ "golang.org/x/image/webp"
 	"io"
 	"net/http"
 	"os"
@@ -229,7 +231,7 @@ Respond with a strictly formatted, rich JSON object with this exact schema:
     "Blend QR borders naturally along the curves of the cords and ribbons"
   ],
   "patch_prompt": "Intricate gold bullion embroidery, military uniform woven fabric texture, heavy navy cloth with gold threads and crimson sash, dramatic studio lighting, sharp contrasting weave, highly detailed masterwork craft",
-  "generated_prompt": "Masterpiece portrait preserving the exact subject, posture, gold braided military uniform, and atmospheric lighting of the artwork with the QR code seamlessly woven into the embroidery and shadows"
+  "generated_prompt": "Masterpiece portrait preserving the exact subject, posture, gold braided military uniform, and atmospheric lighting of the artwork with ornate golden embroidery threads"
 }`
 
 	userPrompt := "Analyze this reference image and target region for QR embedding. Image 1 is the full artwork. "

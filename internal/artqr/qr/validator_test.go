@@ -5,10 +5,12 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"os"
 	"testing"
 
 	"github.com/makiuchi-d/gozxing"
 	"github.com/makiuchi-d/gozxing/qrcode"
+	"xkiro-backend/internal/artqr/model"
 )
 
 func testQR(t *testing.T, payload string) []byte {
@@ -63,3 +65,18 @@ func TestUnreadableQRIsNotInvented(t *testing.T) {
 		t.Fatal("blank image verified")
 	}
 }
+
+func TestValidateSeamlessImage(t *testing.T) {
+	b, err := os.ReadFile("../../../perfect_seamless.png")
+	if err != nil {
+		t.Skipf("perfect_seamless.png not found: %v", err)
+	}
+
+	p := model.Placement{X: 0.28, Y: 0.06, Size: 0.42}
+	res := ValidateGeneratedQRWithPlacement(b, "https://lemas.io.vn", p)
+	t.Logf("Valid: %v, Decoded: %q, Error: %s", res.Valid, res.DecodedPayload, res.Error)
+	if !res.Valid {
+		t.Fatalf("Validation failed on perfect_seamless.png: %s", res.Error)
+	}
+}
+

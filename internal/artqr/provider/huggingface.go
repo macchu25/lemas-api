@@ -8,6 +8,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	"image/png"
 	"io"
 	"log"
 	"net/http"
@@ -15,6 +19,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	_ "golang.org/x/image/webp"
 )
 
 type HuggingFaceProvider struct {
@@ -24,6 +30,9 @@ type HuggingFaceProvider struct {
 
 func NewHuggingFaceProvider() *HuggingFaceProvider {
 	baseURL := strings.TrimRight(os.Getenv("HF_ART_QR_SPACE_URL"), "/")
+	if baseURL == "" {
+		baseURL = "http://127.0.0.1:7860"
+	}
 	token := strings.TrimSpace(os.Getenv("HF_TOKEN"))
 	return &HuggingFaceProvider{
 		BaseURL: baseURL,
@@ -51,7 +60,7 @@ func (h *HuggingFaceProvider) Generate(ctx context.Context, req *GenerationReque
 }
 
 func (h *HuggingFaceProvider) generateGradio(ctx context.Context, req *GenerationRequest) ([]GeneratedImage, error) {
-	httpClient := &http.Client{Timeout: 45 * time.Second}
+	httpClient := &http.Client{Timeout: 180 * time.Second}
 	// 2. Submit generation call
 	count := req.NumOutputs
 	if count <= 0 {
@@ -80,9 +89,14 @@ func (h *HuggingFaceProvider) generateGradio(ctx context.Context, req *Generatio
 		psize = 0.5
 	}
 
+	prompt := req.Prompt
+	if prompt == "" {
+		prompt = req.Payload
+	}
+
 	callPayload := map[string]any{
 		"data": []any{
-			req.Prompt,
+			prompt,
 			req.NegativePrompt,
 			qrControlBase64,
 			refBase64,
@@ -90,7 +104,7 @@ func (h *HuggingFaceProvider) generateGradio(ctx context.Context, req *Generatio
 			refStrength,
 			req.Seed,
 			count,
-			25, // steps
+			28, // steps
 			px,
 			py,
 			psize,
@@ -192,7 +206,16 @@ func (h *HuggingFaceProvider) waitEvent(ctx context.Context, eventID string) ([]
 
 		mime := "image/png"
 		if bytes.HasPrefix(imgBytes, []byte("RIFF")) {
-			mime = "image/webp"
+			if img, _, err := image.Decode(bytes.NewReader(imgBytes)); err == nil {
+				var buf bytes.Buffer
+				if err := png.Encode(&buf, img); err == nil {
+					imgBytes = buf.Bytes()
+				} else {
+					mime = "image/webp"
+				}
+			} else {
+				mime = "image/webp"
+			}
 		}
 		dataURL := fmt.Sprintf("data:%s;base64,%s", mime, base64.StdEncoding.EncodeToString(imgBytes))
 

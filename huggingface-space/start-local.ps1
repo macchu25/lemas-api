@@ -5,6 +5,7 @@ if (-not (Test-Path -LiteralPath $pythonPath)) {
     throw 'Install the .artqr-venv environment first.'
 }
 $env:ART_QR_LOCAL = '1'
+$env:PYTHONUNBUFFERED = '1'
 $env:HF_HOME = Join-Path $workspacePath '.artqr-models'
 $env:GRADIO_ANALYTICS_ENABLED = 'False'
-& $pythonPath (Join-Path $PSScriptRoot 'app.py')
+& $pythonPath -u (Join-Path $PSScriptRoot 'app.py')

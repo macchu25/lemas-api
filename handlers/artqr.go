@@ -11,6 +11,7 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	"image/png"
+	_ "golang.org/x/image/webp"
 	"io"
 	"net/http"
 	"os"

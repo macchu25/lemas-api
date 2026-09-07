@@ -10,6 +10,7 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	"image/png"
+	_ "golang.org/x/image/webp"
 	"io"
 
 	"github.com/makiuchi-d/gozxing"
@@ -122,6 +123,23 @@ func toInvertedGrayscale(src image.Image) image.Image {
 			r, g, b, _ := src.At(x, y).RGBA()
 			lum := uint8((r*299 + g*587 + b*114) / 1000 >> 8)
 			if lum > 128 {
+				gray.SetGray(x, y, color.Gray{Y: 0})
+			} else {
+				gray.SetGray(x, y, color.Gray{Y: 255})
+			}
+		}
+	}
+	return gray
+}
+
+func toInvertedHighContrastGrayscale(src image.Image, threshold uint8) image.Image {
+	bounds := src.Bounds()
+	gray := image.NewGray(bounds)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			r, g, b, _ := src.At(x, y).RGBA()
+			lum := uint8((r*299 + g*587 + b*114) / 1000 >> 8)
+			if lum > threshold {
 				gray.SetGray(x, y, color.Gray{Y: 0})
 			} else {
 				gray.SetGray(x, y, color.Gray{Y: 255})

@@ -20,7 +20,7 @@ type ArtQRJob struct {
 	Status              string        `json:"status" bson:"status"` // queued, decoding, analyzing_style, generating, validating, retrying, completed, failed
 	Progress            int           `json:"progress" bson:"progress"`
 	OriginalPayloadHash string        `json:"original_payload_hash" bson:"original_payload_hash"`
-	OriginalPayload     string        `json:"-" bson:"original_payload"`
+	OriginalPayload     string        `json:"original_payload,omitempty" bson:"original_payload"`
 	PresetID            string        `json:"preset_id,omitempty" bson:"preset_id,omitempty"`
 	Placement           Placement     `json:"placement" bson:"placement"`
 	Prompt              string        `json:"prompt,omitempty" bson:"prompt,omitempty"`

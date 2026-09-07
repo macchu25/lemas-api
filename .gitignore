@@ -18,8 +18,18 @@ xkiro-server.exe
 .env
 .env.local
 
-# IDE
+# IDE & Cache
 .idea/
 .vscode/
 *.swp
 __pycache__/
+.artqr-models/
+.artqr-venv/
+
+# Scratch & test outputs
+*.png
+*.jpg
+*.webp
+*.json
+test_*.py
+scratch/

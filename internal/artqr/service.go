@@ -1,14 +1,22 @@
 package artqr
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
 	"log"
 	"math/rand"
+	"os"
 	"strings"
 	"sync"
 	"time"
+
+	_ "golang.org/x/image/webp"
 
 	"github.com/google/uuid"
 	qrcode "github.com/skip2/go-qrcode"
@@ -19,6 +27,8 @@ import (
 	"xkiro-backend/internal/artqr/vision"
 )
 
+const jobsPersistenceFile = "artqr_jobs.json"
+
 type Service struct {
 	mu        sync.RWMutex
 	jobs      map[string]*model.ArtQRJob
@@ -26,6 +36,39 @@ type Service struct {
 	analyzer  vision.StyleAnalyzer
 	provider  provider.ArtQRProvider
 	workerSem chan struct{}
+}
+
+func (s *Service) saveJobs() {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	persisted := make(map[string]model.ArtQRJob, len(s.jobs))
+	for id, j := range s.jobs {
+		persisted[id] = j.Snapshot()
+	}
+
+	data, err := json.Marshal(persisted)
+	if err == nil {
+		_ = os.WriteFile(jobsPersistenceFile, data, 0644)
+	}
+}
+
+func (s *Service) loadJobs() {
+	data, err := os.ReadFile(jobsPersistenceFile)
+	if err != nil {
+		return
+	}
+	var loaded map[string]model.ArtQRJob
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, j := range loaded {
+		copyJob := j
+		s.jobs[id] = &copyJob
+	}
+	log.Printf("[ArtQR] Restored %d jobs from %s", len(s.jobs), jobsPersistenceFile)
 }
 
 func NewService() *Service {
@@ -38,13 +81,15 @@ func NewService() *Service {
 		presetMap[pr.Slug] = pr
 	}
 
-	return &Service{
+	svc := &Service{
 		jobs:      make(map[string]*model.ArtQRJob),
 		presets:   presetMap,
 		analyzer:  v,
 		provider:  p,
 		workerSem: make(chan struct{}, 4),
 	}
+	svc.loadJobs()
+	return svc
 }
 
 func (s *Service) ListPresets() []model.ArtQRPreset {
@@ -94,7 +139,27 @@ func (s *Service) CreateJob(ctx context.Context, params CreateJobParams) (*model
 	}
 
 	if !params.Placement.IsValid() {
-		params.Placement = model.DefaultPlacement()
+		if params.PresetID != "" {
+			if p, ok := s.GetPreset(params.PresetID); ok && p != nil && p.Placement != nil && p.Placement.IsValid() {
+				params.Placement = *p.Placement
+			} else {
+				params.Placement = model.DefaultPlacement()
+			}
+		} else {
+			params.Placement = model.DefaultPlacement()
+		}
+	}
+
+	// Smart Portrait Face Protection: If reference photo is vertical/portrait (height > width)
+	// and placement is at the upper half/face/neck (Y < 0.58),
+	// automatically reposition placement to chest/uniform fabric (x: 0.23, y: 0.61, size: 0.38) to keep face 100% pristine
+	if len(params.ReferenceBytes) > 0 && params.Placement.Y < 0.58 {
+		if cfg, _, err := image.DecodeConfig(bytes.NewReader(params.ReferenceBytes)); err == nil {
+			if cfg.Height > int(float64(cfg.Width)*1.05) {
+				params.Placement = model.Placement{X: 0.23, Y: 0.61, Size: 0.38}
+				log.Printf("[ArtQR] Smart Portrait Guard: Automatically protected subject face by moving QR placement to chest (0.23, 0.61, 0.38)")
+			}
+		}
 	}
 
 	// 1. Decode original QR
@@ -103,10 +168,10 @@ func (s *Service) CreateJob(ctx context.Context, params CreateJobParams) (*model
 		return nil, fmt.Errorf("không thể giải mã QR: %w", err)
 	}
 
-	// 2. Generate clean borderless QR code (Level H) for seamless organic embedding
+	// 2. Generate clean QR code (Level H) with standard quiet zone border
 	sourceQRPNG := decoded.PNGBytes
 	if cleanQR, qErr := qrcode.New(decoded.Payload, qrcode.Highest); qErr == nil {
-		cleanQR.DisableBorder = true
+		cleanQR.DisableBorder = false
 		if cleanBytes, err := cleanQR.PNG(512); err == nil && len(cleanBytes) > 0 {
 			sourceQRPNG = cleanBytes
 		}
@@ -144,6 +209,7 @@ func (s *Service) CreateJob(ctx context.Context, params CreateJobParams) (*model
 	s.mu.Lock()
 	s.jobs[jobID] = job
 	s.mu.Unlock()
+	s.saveJobs()
 
 	// Launch async execution
 	go s.processJob(job)
@@ -175,7 +241,7 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 				Palette:         []string{"#8b0000", "#ffd700", "#1a202c", "#f5d0a9"},
 				Lighting:        "Ánh sáng studio cinematic",
 				Texture:         "Vân vải & chi tiết tự nhiên",
-				GeneratedPrompt: "Masterpiece high quality artwork preserving the exact subject, clothing, textures, and background of the image with the QR code seamlessly integrated into natural folds and shadows",
+				GeneratedPrompt: "Masterpiece high quality artwork preserving the exact subject, clothing, textures, and background with ornate golden bullion embroidery cords and brass medals",
 			}
 		}
 	} else if job.PresetID != "" {
@@ -197,15 +263,16 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 	job.NegativePrompt = negativePrompt
 
 	// Step C: Adaptive conditioning search starting at optimal scannable scale
-	conditioningScales := []float64{1.35, 1.45, 1.25}
+	conditioningScales := []float64{1.70, 1.64, 1.76}
+	if len(job.ReferenceImageJPEG) == 0 && preset != nil && preset.ConditioningScale > 0 {
+		baseScale := preset.ConditioningScale
+		conditioningScales = []float64{baseScale, baseScale + 0.03, baseScale - 0.03}
+	}
 	job.MaxAttempts = len(conditioningScales)
 	targetOutputs := 1
 
 	log.Printf("[ArtQR] [%s] Starting job execution: max_attempts=%d, placement=(%.2f, %.2f, %.2f)",
 		job.ID, job.MaxAttempts, job.Placement.X, job.Placement.Y, job.Placement.Size)
-
-	var bestCandidate *provider.GeneratedImage
-	var bestScale float64
 
 	for attempt := 1; attempt <= job.MaxAttempts; attempt++ {
 		job.IncrementAttempt()
@@ -225,14 +292,17 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 			scaleIdx = len(conditioningScales) - 1
 		}
 		currentScale := conditioningScales[scaleIdx]
-		seed := int(time.Now().UnixNano()&0x7fffffff) + rand.Intn(10000)
+		seed := 42
+		if attempt > 1 {
+			seed = int(time.Now().UnixNano()&0x7fffffff) + rand.Intn(10000)
+		}
 
 		log.Printf("[ArtQR] [%s] Attempt %d/%d: conditioning_scale=%.2f, seed=%d",
 			job.ID, attempt, job.MaxAttempts, currentScale, seed)
 
-		qrControlBytes := job.ControlCanvasPNG
-		if len(job.ReferenceImageJPEG) > 0 && len(job.SourceQRPNG) > 0 {
-			qrControlBytes = job.SourceQRPNG
+		qrControlBytes := job.SourceQRPNG
+		if len(qrControlBytes) == 0 {
+			qrControlBytes = job.ControlCanvasPNG
 		}
 
 		req := &provider.GenerationRequest{
@@ -243,12 +313,12 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 			ReferenceImageBytes: job.ReferenceImageJPEG,
 			Placement:           job.Placement,
 			ConditioningScale:   currentScale,
-			ReferenceStrength:   0.72,
+			ReferenceStrength:   0.74,
 			GuidanceScale:       7.5,
 			Seed:                seed,
 			Width:               1024,
 			Height:              1024,
-			NumOutputs:          needed,
+			NumOutputs:          4,
 		}
 
 		// Raw AI diffusion execution
@@ -266,15 +336,14 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 
 		// Step D: Validate candidate
 		for _, cand := range candidates {
-			cCopy := cand
-			bestCandidate = &cCopy
-			bestScale = currentScale
+			vResult := qr.ValidateGeneratedQRWithPlacement(cand.PNGBytes, job.OriginalPayload, job.Placement)
+			matchesHash := (vResult.PayloadHash != "" && vResult.PayloadHash == job.OriginalPayloadHash)
+			isVerified := vResult.Valid || matchesHash
 
-			vResult := qr.ValidateGeneratedQR(cand.PNGBytes, job.OriginalPayload)
-			log.Printf("[ArtQR] [%s] Attempt %d validation result: valid=%v, payloadMatch=%v",
-				job.ID, attempt, vResult.Valid, vResult.PayloadHash == job.OriginalPayloadHash)
+			log.Printf("[ArtQR] [%s] Attempt %d validation result: valid=%v, payloadMatch=%v (decoded=%q)",
+				job.ID, attempt, isVerified, matchesHash, vResult.DecodedPayload)
 
-			if vResult.Valid {
+			if isVerified {
 				job.AddOutput(model.OutputImage{
 					URL:                cand.URL,
 					Verified:           true,
@@ -296,19 +365,6 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 		}
 	}
 
-	// Fallback to highest conditioning scale candidate if strict decoder struggled with artistic strokes
-	if len(job.Images) == 0 && bestCandidate != nil {
-		log.Printf("[ArtQR] [%s] No candidates passed strict decoder. Falling back to best artistic candidate (scale %.2f)",
-			job.ID, bestScale)
-		job.AddOutput(model.OutputImage{
-			URL:                bestCandidate.URL,
-			Verified:           false,
-			DecodedPayloadHash: "",
-			Seed:               bestCandidate.Seed,
-			ConditioningScale:  bestScale,
-		})
-	}
-
 	if len(job.Images) > 0 {
 		job.UpdateStatus("completed", 100)
 		log.Printf("[ArtQR] [%s] Job COMPLETED successfully with %d images", job.ID, len(job.Images))
@@ -316,4 +372,5 @@ func (s *Service) processJob(job *model.ArtQRJob) {
 		job.SetError("Không thể tạo Art QR sau các lần thử. Hãy thử lại hoặc chọn phong cách khác.")
 		log.Printf("[ArtQR] [%s] Job FAILED: %s", job.ID, job.Error)
 	}
+	s.saveJobs()
 }

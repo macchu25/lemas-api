@@ -10,6 +10,7 @@ import (
 
 	"xkiro-backend/db"
 	"xkiro-backend/handlers"
+	"xkiro-backend/services"
 )
 
 func main() {
@@ -24,6 +25,9 @@ func main() {
 	// Initialize Database (MongoDB + auto-fallback)
 	db.InitDB()
 
+	// Initialize Email Service (SMTP)
+	services.InitEmailService()
+
 	mux := http.NewServeMux()
 
 	// Public Routes
@@ -34,6 +38,9 @@ func main() {
 
 	// Auth & User
 	mux.HandleFunc("/api/auth/register", handlers.RegisterHandler)
+	mux.HandleFunc("/api/auth/send-otp", handlers.SendOTPHandler)
+	mux.HandleFunc("/api/auth/verify-otp", handlers.VerifyOTPHandler)
+	mux.HandleFunc("/api/auth/resend-otp", handlers.ResendOTPHandler)
 	mux.HandleFunc("/api/auth/login", handlers.LoginHandler)
 	mux.HandleFunc("/api/auth/oauth", handlers.OAuthHandler)
 	mux.HandleFunc("/api/auth/me", handlers.AuthMiddleware(handlers.GetMeHandler))

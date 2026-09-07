@@ -5,7 +5,10 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
+	_ "image/gif"
+	_ "image/jpeg"
 	"image/png"
+	_ "golang.org/x/image/webp"
 	"math"
 
 	qrcode "github.com/skip2/go-qrcode"

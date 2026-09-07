@@ -25,7 +25,7 @@ func TestPayloadGenerateContract(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Error(err)
 			}
-			if len(body.Data) != 7 || body.Data[0] != " payload " || body.Data[4] != float64(123) || body.Data[5] != float64(1) || body.Data[6] != float64(25) {
+			if len(body.Data) != 12 || body.Data[0] != " payload " || body.Data[6] != float64(123) || body.Data[7] != float64(1) || body.Data[8] != float64(25) {
 				t.Errorf("wrong contract: %#v", body.Data)
 			}
 			fmt.Fprint(w, `{"event_id":"abc"}`)
