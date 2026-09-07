@@ -53,6 +53,7 @@ func TestAdminUpstreamKeyManagementSecurity(t *testing.T) {
 	// 3. Add Key to Pool
 	addReqBody := map[string]interface{}{
 		"key":        "sk-live-test-key-1234567890",
+		"name":       "Test Account 01",
 		"provider":   "Mock Provider",
 		"base_url":   mockUpstream.URL,
 		"test_first": true,

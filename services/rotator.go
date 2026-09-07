@@ -21,6 +21,7 @@ type UpstreamKey struct {
 	ID             string    `json:"id"`
 	Key            string    `json:"-"` // SECURITY: NEVER serialized into JSON response!
 	MaskedKey      string    `json:"key_masked"`
+	Name           string    `json:"name"` // Tên gợi nhớ tài khoản / chủ sở hữu key
 	Provider       string    `json:"provider"`
 	BaseURL        string    `json:"base_url,omitempty"`
 	RequestCount   uint64    `json:"request_count"`
@@ -94,6 +95,7 @@ func InitKeyRotator() *KeyRotator {
 				ID:          fmt.Sprintf("key-%d", i+1),
 				Key:         k,
 				MaskedKey:   MaskKey(k),
+				Name:        fmt.Sprintf("ENV Account #%d", i+1),
 				Provider:    "xKiro Upstream",
 				BaseURL:     baseURL,
 				IsActive:    true,
@@ -180,6 +182,7 @@ func (r *KeyRotator) getPoolStatsLocked() map[string]interface{} {
 
 		statsList[i] = map[string]interface{}{
 			"id":               k.ID,
+			"name":             k.Name,
 			"index":            i + 1,
 			"key_masked":       k.MaskedKey,
 			"provider":         k.Provider,
@@ -205,11 +208,16 @@ func (r *KeyRotator) getPoolStatsLocked() map[string]interface{} {
 	}
 }
 
-// AddKey registers a new API key to the active rotation pool
-func (r *KeyRotator) AddKey(ctx context.Context, rawKey string, provider string, customBaseURL string, testFirst bool) (*UpstreamKey, error) {
+// AddKey registers a new API key to the active rotation pool with an optional account name/alias
+func (r *KeyRotator) AddKey(ctx context.Context, rawKey string, name string, provider string, customBaseURL string, testFirst bool) (*UpstreamKey, error) {
 	rawKey = strings.TrimSpace(rawKey)
 	if rawKey == "" {
 		return nil, fmt.Errorf("API Key không được để trống")
+	}
+
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = fmt.Sprintf("Account Key #%d", len(r.keys)+1)
 	}
 
 	r.mu.Lock()
@@ -247,6 +255,7 @@ func (r *KeyRotator) AddKey(ctx context.Context, rawKey string, provider string,
 		ID:          "key-" + randomID(),
 		Key:         rawKey,
 		MaskedKey:   MaskKey(rawKey),
+		Name:        name,
 		Provider:    provider,
 		BaseURL:     targetBaseURL,
 		IsActive:    true,
