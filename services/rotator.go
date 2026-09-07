@@ -469,111 +469,77 @@ func (r *KeyRotator) ForwardChat(ctx context.Context, payload map[string]interfa
 	if modelStr == "" || modelStr == "default" || modelStr == "lemas-1.0" {
 		payload["model"] = "deepseek/deepseek-v4-flash"
 	} else {
-		// Use exact model requested by user (e.g. deepseek/deepseek-r1, openai/gpt-4o, claude-3-7-sonnet, etc.)
 		payload["model"] = modelStr
 	}
 
-	// Neutral, professional AI system prompt without mentioning upstream provider names
-	const neutralSystemPrompt = "Bạn là một trợ lý trí tuệ nhân tạo thông minh, hữu ích và lịch sự. Hãy trả lời câu hỏi của người dùng một cách chính xác, tự nhiên và chuyên nghiệp nhất."
-
-	if msgs, ok := payload["messages"].([]interface{}); ok {
-		hasSystem := false
-		newMsgs := make([]interface{}, 0, len(msgs)+1)
-		for _, m := range msgs {
-			if mMap, ok := m.(map[string]interface{}); ok {
-				if role, _ := mMap["role"].(string); role == "system" {
-					hasSystem = true
-					origContent, _ := mMap["content"].(string)
-					mMap["content"] = neutralSystemPrompt + "\n" + origContent
-				}
-				newMsgs = append(newMsgs, mMap)
-			}
-		}
-		if !hasSystem {
-			systemMsg := map[string]interface{}{
-				"role":    "system",
-				"content": neutralSystemPrompt,
-			}
-			newMsgs = append([]interface{}{systemMsg}, newMsgs...)
-		}
-		payload["messages"] = newMsgs
-	}
-
+	// DO NOT inject or modify messages: preserve exact user messages without any fingerprintable system prompt!
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal payload: %w", err)
 	}
 
-	maxAttempts := len(r.keys)
-	if maxAttempts == 0 {
+	totalKeys := len(r.keys)
+	if totalKeys == 0 {
 		return nil, fmt.Errorf("no upstream keys configured in pool")
 	}
 
-	var lastErr error
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		keyObj, keyIdx := r.GetNextKey()
-		if keyObj == nil {
-			continue
-		}
-
-		atomic.AddUint64(&keyObj.RequestCount, 1)
-		keyObj.LastUsed = time.Now()
-		keyObj.LastChecked = time.Now()
-
-		targetBase := keyObj.BaseURL
-		if targetBase == "" {
-			targetBase = r.baseURL
-		}
-
-		req, err := http.NewRequestWithContext(ctx, "POST", targetBase+"/chat/completions", bytes.NewBuffer(jsonData))
-		if err != nil {
-			lastErr = err
-			keyObj.LastError = err.Error()
-			continue
-		}
-
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+keyObj.Key)
-		req.Header.Set("User-Agent", getRandomUserAgent())
-		req.Header.Set("Accept", "application/json")
-
-		resp, err := r.httpClient.Do(req)
-		if err != nil {
-			log.Printf("[Rotator] ⚠️ Key #%d request failed: %v. Rotating to next key...", keyIdx+1, err)
-			atomic.AddUint64(&keyObj.ErrorCount, 1)
-			keyObj.LastError = err.Error()
-			keyObj.IsActive = false
-			lastErr = err
-			continue
-		}
-
-		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		keyObj.LastStatusCode = resp.StatusCode
-
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			keyObj.IsActive = true
-			keyObj.LastError = ""
-			var result map[string]interface{}
-			if err := json.Unmarshal(body, &result); err != nil {
-				lastErr = fmt.Errorf("failed to parse upstream response: %w", err)
-				continue
-			}
-			return result, nil
-		}
-
-		// If error (e.g. 401 invalid key, 403 quota, 429 rate limit or 5xx), update status and rotate
-		errMsg := string(body)
-		keyObj.LastError = errMsg
-		if resp.StatusCode == 401 || resp.StatusCode == 403 {
-			keyObj.IsActive = false
-		}
-		atomic.AddUint64(&keyObj.ErrorCount, 1)
-		log.Printf("[Rotator] ⚠️ Upstream Key #%d returned HTTP %d (%s). Rotating to next key in pool...",
-			keyIdx+1, resp.StatusCode, errMsg)
-		lastErr = fmt.Errorf("upstream HTTP %d: %s", resp.StatusCode, errMsg)
+	// Single attempt per user request: DO NOT cascade-retry immediately across all keys to prevent sequence fingerprinting!
+	keyObj, keyIdx := r.GetNextKey()
+	if keyObj == nil {
+		return nil, fmt.Errorf("không có key nào khả dụng")
 	}
 
-	return nil, fmt.Errorf("all %d upstream keys in rotation pool failed: %v", maxAttempts, lastErr)
+	atomic.AddUint64(&keyObj.RequestCount, 1)
+	keyObj.LastUsed = time.Now()
+	keyObj.LastChecked = time.Now()
+
+	targetBase := keyObj.BaseURL
+	if targetBase == "" {
+		targetBase = r.baseURL
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", targetBase+"/chat/completions", bytes.NewBuffer(jsonData))
+	if err != nil {
+		keyObj.LastError = err.Error()
+		return nil, err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+keyObj.Key)
+	req.Header.Set("User-Agent", getRandomUserAgent())
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := r.httpClient.Do(req)
+	if err != nil {
+		log.Printf("[Rotator] ⚠️ Key #%d request failed: %v", keyIdx+1, err)
+		atomic.AddUint64(&keyObj.ErrorCount, 1)
+		keyObj.LastError = err.Error()
+		keyObj.IsActive = false
+		return nil, err
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	keyObj.LastStatusCode = resp.StatusCode
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		keyObj.IsActive = true
+		keyObj.LastError = ""
+		var result map[string]interface{}
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, fmt.Errorf("failed to parse upstream response: %w", err)
+		}
+		return result, nil
+	}
+
+	// Handle error: record error status and mark inactive if 401/403, but DO NOT cascade to other keys
+	errMsg := string(body)
+	keyObj.LastError = errMsg
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		keyObj.IsActive = false
+	}
+	atomic.AddUint64(&keyObj.ErrorCount, 1)
+	log.Printf("[Rotator] ⚠️ Upstream Key #%d returned HTTP %d (%s)", keyIdx+1, resp.StatusCode, errMsg)
+	return nil, fmt.Errorf("upstream HTTP %d: %s", resp.StatusCode, errMsg)
 }
