@@ -351,6 +351,53 @@ func (r *KeyRotator) testSingleKeyInternal(ctx context.Context, rawKey string, b
 	if baseURL == "" {
 		baseURL = r.baseURL
 	}
+	// Detect if testing an image generation endpoint (e.g. MachGen, Pollinations, Replicate)
+	isImageEndpoint := strings.Contains(baseURL, "pollinations.ai") ||
+		strings.Contains(baseURL, "replicate.com") ||
+		strings.EqualFold(model, "flux") ||
+		strings.Contains(strings.ToLower(model), "flux")
+
+	if isImageEndpoint {
+		start := time.Now()
+		var testURL string
+		var req *http.Request
+		var err error
+
+		if strings.Contains(baseURL, "pollinations.ai") {
+			testURL = baseURL + "/prompt/test?width=32&height=32&nologo=true"
+			req, err = http.NewRequestWithContext(ctx, "GET", testURL, nil)
+		} else if strings.Contains(baseURL, "replicate.com") {
+			testURL = baseURL + "/models"
+			req, err = http.NewRequestWithContext(ctx, "GET", testURL, nil)
+			if rawKey != "" {
+				req.Header.Set("Authorization", "Bearer "+rawKey)
+			}
+		} else {
+			testURL = baseURL
+			req, err = http.NewRequestWithContext(ctx, "GET", testURL, nil)
+			if rawKey != "" {
+				req.Header.Set("Authorization", "Bearer "+rawKey)
+			}
+		}
+
+		if err != nil {
+			return false, 0, err.Error(), 0
+		}
+		req.Header.Set("User-Agent", getRandomUserAgent())
+
+		resp, err := r.httpClient.Do(req)
+		latency := time.Since(start).Milliseconds()
+		if err != nil {
+			return false, 0, fmt.Sprintf("Lỗi kết nối mạng: %v", err), latency
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+			return true, resp.StatusCode, "Kết nối thành công! API MachGen sẵn sàng (Người dùng tự do chọn model trên Studio).", latency
+		}
+		return false, resp.StatusCode, fmt.Sprintf("API ảnh phản hồi HTTP %d", resp.StatusCode), latency
+	}
+
 	if model == "" {
 		if strings.Contains(baseURL, "deepseek.com") {
 			model = "deepseek-chat"
