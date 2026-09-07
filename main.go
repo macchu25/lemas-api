@@ -71,6 +71,7 @@ func main() {
 	mux.HandleFunc("/api/admin/users/adjust", handlers.AdminAuthMiddleware(handlers.AdminAdjustUserHandler))
 	mux.HandleFunc("/api/admin/giftcodes", handlers.AdminAuthMiddleware(handlers.AdminGiftcodesHandler))
 	mux.HandleFunc("/api/admin/giftcodes/delete", handlers.AdminAuthMiddleware(handlers.AdminDeleteGiftcodeHandler))
+	mux.HandleFunc("/api/admin/rotator/check", handlers.AdminAuthMiddleware(handlers.AdminCheckRotatorHandler))
 
 	// QR Transparency & Isolation Engine (Admin Protected)
 	mux.HandleFunc("/api/admin/art-qr/isolate-transparent", handlers.AdminAuthMiddleware(handlers.QRRemoveBackgroundHandler))

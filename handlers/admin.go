@@ -84,18 +84,43 @@ func AdminOverviewHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	activeUpstream := 0
+	totalUpstream := 0
+	if a, ok := rotatorStats["active_keys"].(int); ok {
+		activeUpstream = a
+	}
+	if t, ok := rotatorStats["total_keys"].(int); ok {
+		totalUpstream = t
+	}
+
+	healthStr := fmt.Sprintf("%d/%d Keys Hoạt Động", activeUpstream, totalUpstream)
+	if totalUpstream > 0 && activeUpstream == 0 {
+		healthStr = "CRITICAL: 0 Keys Hoạt Động (Tất Cả Keys Lỗi)"
+	}
+
 	resp := AdminOverviewResponse{
 		TotalUsers:         len(users),
 		TotalActiveKeys:    activeKeysCount,
 		TotalTokensUsed:    totalTokens,
 		TotalCostUSD:       totalCost,
 		TotalRequests:      totalReqCount,
-		UpstreamKeysHealth: "8/8 Keys Operational",
+		UpstreamKeysHealth: healthStr,
 		UpstreamStats:      rotatorStats,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// POST /api/admin/rotator/check
+func AdminCheckRotatorHandler(w http.ResponseWriter, r *http.Request) {
+	rotator := services.InitKeyRotator()
+	stats := rotator.CheckAllKeys(r.Context())
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"stats":   stats,
+	})
 }
 
 // GET /api/admin/users

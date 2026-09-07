@@ -16,11 +16,14 @@ import (
 )
 
 type UpstreamKey struct {
-	Key          string
-	RequestCount uint64
-	ErrorCount   uint64
-	IsActive     bool
-	LastUsed     time.Time
+	Key            string    `json:"key"`
+	RequestCount   uint64    `json:"request_count"`
+	ErrorCount     uint64    `json:"error_count"`
+	IsActive       bool      `json:"is_active"`
+	LastUsed       time.Time `json:"last_used"`
+	LastError      string    `json:"last_error,omitempty"`
+	LastStatusCode int       `json:"last_status_code,omitempty"`
+	LastChecked    time.Time `json:"last_checked"`
 }
 
 type KeyRotator struct {
@@ -60,12 +63,14 @@ func InitKeyRotator() *KeyRotator {
 			baseURL = "https://api.xkiro.com/v1"
 		}
 
+		now := time.Now()
 		keyObjects := make([]*UpstreamKey, len(rawKeys))
 		for i, k := range rawKeys {
 			keyObjects[i] = &UpstreamKey{
-				Key:      k,
-				IsActive: true,
-				LastUsed: time.Now(),
+				Key:         k,
+				IsActive:    true,
+				LastUsed:    now,
+				LastChecked: now,
 			}
 		}
 
@@ -79,6 +84,13 @@ func InitKeyRotator() *KeyRotator {
 		}
 
 		log.Printf("[Rotator] 🚀 Initialized Brain Engine with %d upstream rotating API keys (Base: %s)", len(rawKeys), baseURL)
+
+		// Perform asynchronous background health check on startup
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			DefaultRotator.CheckAllKeys(ctx)
+		}()
 	})
 
 	return DefaultRotator
@@ -100,26 +112,107 @@ func (r *KeyRotator) GetNextKey() (*UpstreamKey, int) {
 func (r *KeyRotator) GetPoolStats() map[string]interface{} {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	return r.getPoolStatsLocked()
+}
 
+func (r *KeyRotator) getPoolStatsLocked() map[string]interface{} {
 	statsList := make([]map[string]interface{}, len(r.keys))
+	activeCount := 0
+	deadCount := 0
+
 	for i, k := range r.keys {
+		if k.IsActive {
+			activeCount++
+		} else {
+			deadCount++
+		}
+
+		var lastUsedStr string
+		if !k.LastUsed.IsZero() {
+			lastUsedStr = k.LastUsed.Format(time.RFC3339)
+		}
+
+		var lastCheckedStr string
+		if !k.LastChecked.IsZero() {
+			lastCheckedStr = k.LastChecked.Format(time.RFC3339)
+		}
+
+		masked := k.Key
+		if len(k.Key) > 13 {
+			masked = k.Key[:9] + "••••••••" + k.Key[len(k.Key)-4:]
+		}
+
 		statsList[i] = map[string]interface{}{
-			"index":         i + 1,
-			"key_masked":    k.Key[:9] + "••••••••" + k.Key[len(k.Key)-4:],
-			"request_count": k.RequestCount,
-			"error_count":   k.ErrorCount,
-			"is_active":     k.IsActive,
-			"last_used":     k.LastUsed.Format(time.RFC3339),
+			"index":            i + 1,
+			"key_masked":       masked,
+			"request_count":    atomic.LoadUint64(&k.RequestCount),
+			"error_count":      atomic.LoadUint64(&k.ErrorCount),
+			"is_active":        k.IsActive,
+			"last_used":        lastUsedStr,
+			"last_checked":     lastCheckedStr,
+			"last_error":       k.LastError,
+			"last_status_code": k.LastStatusCode,
 		}
 	}
 
 	return map[string]interface{}{
-		"total_keys":     len(r.keys),
-		"active_keys":    len(r.keys),
-		"default_model":  "Lemas 1.0 (Flagship)",
-		"keys":           statsList,
-		"rotation_mode":  "Smart Round-Robin with Auto-Failover",
+		"total_keys":    len(r.keys),
+		"active_keys":   activeCount,
+		"dead_keys":     deadCount,
+		"default_model": "Lemas 1.0 (Flagship)",
+		"keys":          statsList,
+		"rotation_mode": "Smart Round-Robin with Live Health Guard",
 	}
+}
+
+// CheckAllKeys pings upstream using each key to verify live status and update metrics
+func (r *KeyRotator) CheckAllKeys(ctx context.Context) map[string]interface{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	testPayload := map[string]interface{}{
+		"model":      "deepseek/deepseek-v4-flash",
+		"max_tokens": 1,
+		"messages": []map[string]string{
+			{"role": "user", "content": "ping"},
+		},
+	}
+	jsonData, _ := json.Marshal(testPayload)
+
+	for _, k := range r.keys {
+		k.LastChecked = time.Now()
+		req, err := http.NewRequestWithContext(ctx, "POST", r.baseURL+"/chat/completions", bytes.NewBuffer(jsonData))
+		if err != nil {
+			k.LastError = err.Error()
+			k.IsActive = false
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+k.Key)
+		req.Header.Set("User-Agent", "Lemas.AI-HealthChecker/1.0")
+
+		resp, err := r.httpClient.Do(req)
+		if err != nil {
+			k.LastError = err.Error()
+			k.IsActive = false
+			atomic.AddUint64(&k.ErrorCount, 1)
+			continue
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		k.LastStatusCode = resp.StatusCode
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			k.IsActive = true
+			k.LastError = ""
+		} else {
+			k.IsActive = false
+			k.LastError = string(body)
+			atomic.AddUint64(&k.ErrorCount, 1)
+		}
+	}
+
+	return r.getPoolStatsLocked()
 }
 
 func (r *KeyRotator) ForwardChat(ctx context.Context, payload map[string]interface{}) (map[string]interface{}, error) {
@@ -174,10 +267,12 @@ func (r *KeyRotator) ForwardChat(ctx context.Context, payload map[string]interfa
 
 		atomic.AddUint64(&keyObj.RequestCount, 1)
 		keyObj.LastUsed = time.Now()
+		keyObj.LastChecked = time.Now()
 
 		req, err := http.NewRequestWithContext(ctx, "POST", r.baseURL+"/chat/completions", bytes.NewBuffer(jsonData))
 		if err != nil {
 			lastErr = err
+			keyObj.LastError = err.Error()
 			continue
 		}
 
@@ -185,13 +280,12 @@ func (r *KeyRotator) ForwardChat(ctx context.Context, payload map[string]interfa
 		req.Header.Set("Authorization", "Bearer "+keyObj.Key)
 		req.Header.Set("User-Agent", "Lemas.AI-Gateway-Rotator/1.0")
 
-		log.Printf("[Rotator] ⚡ Routing request to `%s` via Key #%d (%s••••%s) [Attempt %d/%d]",
-			payload["model"], keyIdx+1, keyObj.Key[:9], keyObj.Key[len(keyObj.Key)-4:], attempt+1, maxAttempts)
-
 		resp, err := r.httpClient.Do(req)
 		if err != nil {
 			log.Printf("[Rotator] ⚠️ Key #%d request failed: %v. Rotating to next key...", keyIdx+1, err)
 			atomic.AddUint64(&keyObj.ErrorCount, 1)
+			keyObj.LastError = err.Error()
+			keyObj.IsActive = false
 			lastErr = err
 			continue
 		}
@@ -199,7 +293,11 @@ func (r *KeyRotator) ForwardChat(ctx context.Context, payload map[string]interfa
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 
+		keyObj.LastStatusCode = resp.StatusCode
+
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			keyObj.IsActive = true
+			keyObj.LastError = ""
 			var result map[string]interface{}
 			if err := json.Unmarshal(body, &result); err != nil {
 				lastErr = fmt.Errorf("failed to parse upstream response: %w", err)
@@ -208,11 +306,16 @@ func (r *KeyRotator) ForwardChat(ctx context.Context, payload map[string]interfa
 			return result, nil
 		}
 
-		// If error (e.g. 429 rate limit or 5xx), log and rotate to next key
-		log.Printf("[Rotator] ⚠️ Upstream Key #%d returned HTTP %d (%s). Rotating to next key in pool...",
-			keyIdx+1, resp.StatusCode, string(body))
+		// If error (e.g. 401 invalid key, 403 quota, 429 rate limit or 5xx), update status and rotate
+		errMsg := string(body)
+		keyObj.LastError = errMsg
+		if resp.StatusCode == 401 || resp.StatusCode == 403 {
+			keyObj.IsActive = false
+		}
 		atomic.AddUint64(&keyObj.ErrorCount, 1)
-		lastErr = fmt.Errorf("upstream HTTP %d: %s", resp.StatusCode, string(body))
+		log.Printf("[Rotator] ⚠️ Upstream Key #%d returned HTTP %d (%s). Rotating to next key in pool...",
+			keyIdx+1, resp.StatusCode, errMsg)
+		lastErr = fmt.Errorf("upstream HTTP %d: %s", resp.StatusCode, errMsg)
 	}
 
 	return nil, fmt.Errorf("all %d upstream keys in rotation pool failed: %v", maxAttempts, lastErr)
