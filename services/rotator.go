@@ -243,6 +243,10 @@ func (r *KeyRotator) AddKey(ctx context.Context, rawKey string, name string, pro
 			provider = "OpenAI"
 		} else if strings.Contains(targetBaseURL, "groq.com") {
 			provider = "Groq"
+		} else if strings.Contains(targetBaseURL, "pollinations.ai") {
+			provider = "MachGen Pollinations"
+		} else if strings.Contains(targetBaseURL, "replicate.com") {
+			provider = "MachGen Replicate"
 		} else if strings.Contains(targetBaseURL, "xkiro.com") {
 			provider = "xKiro"
 		} else {
