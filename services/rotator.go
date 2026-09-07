@@ -367,9 +367,14 @@ func (r *KeyRotator) testSingleKeyInternal(ctx context.Context, rawKey string, b
 			testURL = baseURL + "/prompt/test?width=32&height=32&nologo=true"
 			req, err = http.NewRequestWithContext(ctx, "GET", testURL, nil)
 		} else if strings.Contains(baseURL, "replicate.com") {
+			if rawKey == "" {
+				return false, 401, "Replicate API bắt buộc phải có API Token (bắt đầu bằng r8_...). Hãy nhập token Replicate của bạn vào ô API Key, hoặc chọn preset 'MachGen Studio (Miễn phí - Không cần Key)' để tạo ảnh không giới hạn mà không cần tài khoản.", 0
+			}
 			testURL = baseURL + "/models"
 			req, err = http.NewRequestWithContext(ctx, "GET", testURL, nil)
-			if rawKey != "" {
+			if strings.HasPrefix(rawKey, "Token ") || strings.HasPrefix(rawKey, "Bearer ") {
+				req.Header.Set("Authorization", rawKey)
+			} else {
 				req.Header.Set("Authorization", "Bearer "+rawKey)
 			}
 		} else {
@@ -392,10 +397,19 @@ func (r *KeyRotator) testSingleKeyInternal(ctx context.Context, rawKey string, b
 		}
 		defer resp.Body.Close()
 
+		body, _ := io.ReadAll(resp.Body)
 		if resp.StatusCode >= 200 && resp.StatusCode < 400 {
 			return true, resp.StatusCode, "Kết nối thành công! API MachGen sẵn sàng (Người dùng tự do chọn model trên Studio).", latency
 		}
-		return false, resp.StatusCode, fmt.Sprintf("API ảnh phản hồi HTTP %d", resp.StatusCode), latency
+
+		if resp.StatusCode == 401 {
+			if strings.Contains(baseURL, "replicate.com") {
+				return false, resp.StatusCode, "Lỗi xác thực Replicate: Token API không hợp lệ hoặc đã hết hạn (Token Replicate bắt đầu bằng r8_...). Lưu ý: API Key của xKiro không dùng được cho Replicate. Hãy chọn preset 'MachGen Studio (Miễn phí)' để tạo ảnh không cần key.", latency
+			}
+			return false, resp.StatusCode, "Lỗi xác thực (HTTP 401): API Key không hợp lệ hoặc chưa được cấp quyền.", latency
+		}
+
+		return false, resp.StatusCode, string(body), latency
 	}
 
 	if model == "" {
