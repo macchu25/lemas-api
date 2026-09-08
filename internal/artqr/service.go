@@ -627,15 +627,14 @@ func (s *Service) GenerateArtQR(ctx context.Context, params CreateJobParams) (*A
 			if current.Status == "completed" {
 				var finalImageURL string
 				var finalDecoded string
+				qrValid := false
 				if len(current.Images) > 0 {
 					finalImageURL = current.Images[0].DataURL
 					if finalImageURL == "" {
 						finalImageURL = current.Images[0].URL
 					}
 					finalDecoded = current.Images[0].DecodedPayload
-				}
-				if finalDecoded == "" {
-					finalDecoded = current.OriginalPayload
+					qrValid = current.Images[0].Verified
 				}
 
 				return &ArtQRResult{
@@ -643,7 +642,7 @@ func (s *Service) GenerateArtQR(ctx context.Context, params CreateJobParams) (*A
 					Image:             finalImageURL,
 					ExpectedPayload:   current.OriginalPayload,
 					DecodedPayload:    finalDecoded,
-					QRValid:           true,
+					QRValid:           qrValid,
 					Preset:            current.PresetID,
 					BackgroundRemoved: current.BackgroundRemoved,
 					FallbackMode:      current.FallbackMode,
@@ -781,6 +780,27 @@ INPUT RULES:
 		return
 	} else {
 		log.Printf("[ArtQR] [%s] MachGen aesthetic generation received (%d bytes)", job.ID, len(machgenResultBytes))
+	}
+
+	// Preview mode: return the untouched AI result after exactly one generation.
+	// No deterministic QR overlay, ZXing validation, or paid regeneration occurs.
+	// Production verification can be restored with ARTQR_VALIDATE_OUTPUT=true.
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv("ARTQR_VALIDATE_OUTPUT")), "true") {
+		mimeType := http.DetectContentType(machgenResultBytes)
+		if !strings.HasPrefix(mimeType, "image/") {
+			mimeType = "image/png"
+		}
+		dataURL := "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(machgenResultBytes)
+		job.ProcessingMs = time.Since(start).Milliseconds()
+		job.AddOutput(model.OutputImage{
+			URL:               dataURL,
+			DataURL:           dataURL,
+			Verified:          false,
+			ConditioningScale: preset.ConditioningScale,
+		})
+		job.UpdateStatus("completed", 100)
+		log.Printf("[ArtQR] [%s] Preview mode completed in %dms: raw AI image returned without QR overlay, validation, or retries", job.ID, job.ProcessingMs)
+		return
 	}
 
 	// Check if primary API failed or ran out of quota and auto-swapped to MachGen engine

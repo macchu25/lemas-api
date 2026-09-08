@@ -90,6 +90,7 @@ func TestArtQRPipelineWithMandatoryBackgroundRemovalAndDeterministicRestoration(
 }
 
 func TestArtQRPipelineWithMockGPTImage2Server(t *testing.T) {
+	t.Setenv("ARTQR_VALIDATE_OUTPUT", "true")
 	expectedPayload := "https://lemas.io.vn/art-qr-verified"
 	qrObj, err := qrcode.New(expectedPayload, qrcode.Highest)
 	if err != nil {
@@ -186,6 +187,3 @@ func TestArtQRPipelineWithDoraemonScene(t *testing.T) {
 		t.Fatalf("expected success=true, got error: %s", result.Error)
 	}
 }
-
-
-
