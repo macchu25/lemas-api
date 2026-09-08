@@ -81,9 +81,9 @@ func main() {
 	mux.HandleFunc("/api/admin/rotator/keys/delete", handlers.AdminAuthMiddleware(handlers.AdminDeleteUpstreamKeyHandler))
 	mux.HandleFunc("/api/admin/rotator/keys/toggle", handlers.AdminAuthMiddleware(handlers.AdminToggleUpstreamKeyHandler))
 
-	// QR Transparency & Isolation Engine (Admin Protected)
+	// QR Transparency & Isolation Engine
 	mux.HandleFunc("/api/admin/art-qr/isolate-transparent", handlers.AdminAuthMiddleware(handlers.QRRemoveBackgroundHandler))
-	mux.HandleFunc("/api/art-qr/isolate-transparent", handlers.AdminAuthMiddleware(handlers.QRRemoveBackgroundHandler))
+	mux.HandleFunc("/api/art-qr/isolate-transparent", handlers.QRRemoveBackgroundHandler)
 	mux.HandleFunc("/api/art-qr/sample-qr", handlers.SampleQRGenerateHandler)
 
 	// Intermediate QR Code Engine (Lowest Module Count Redirection)
