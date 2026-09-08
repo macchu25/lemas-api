@@ -30,6 +30,7 @@ import (
 	"xkiro-backend/internal/artqr/qr"
 	"xkiro-backend/internal/artqr/vision"
 	"xkiro-backend/internal/qrtrans"
+	"xkiro-backend/services"
 )
 
 const (
@@ -584,6 +585,13 @@ func (s *Service) processJob(job *model.ArtQRJob, binaryMask *qr.BinaryQRMask, p
 	job.UpdateStatus("generating", 35)
 
 	// Step B: MachGen Two-Reference Synthesis
+	// Check if an active MachGen key was added by Admin in Rotator or configured in .env
+	if services.DefaultRotator != nil {
+		if mgKey, mgURL, mgModel := services.DefaultRotator.GetActiveMachGenKey(); mgKey != "" || mgURL != "" {
+			s.machgen.Configure(mgURL, mgKey, mgModel)
+		}
+	}
+
 	// Ref 1: Base scene image (ReferenceImageJPEG)
 	// Ref 2: Cleaned transparent QR from background removal (CleanedQRPNG)
 	machgenResultBytes, err := s.machgen.GenerateWithTwoReferences(

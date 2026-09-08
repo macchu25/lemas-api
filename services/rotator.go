@@ -53,6 +53,92 @@ func randomID() string {
 	return hex.EncodeToString(b)
 }
 
+const keysStorageFile = "upstream_keys.json"
+
+type rawUpstreamKeyFileItem struct {
+	ID             string    `json:"id"`
+	Key            string    `json:"raw_key"`
+	MaskedKey      string    `json:"key_masked"`
+	Name           string    `json:"name"`
+	Provider       string    `json:"provider"`
+	BaseURL        string    `json:"base_url"`
+	RequestCount   uint64    `json:"request_count"`
+	ErrorCount     uint64    `json:"error_count"`
+	IsActive       bool      `json:"is_active"`
+	LastUsed       time.Time `json:"last_used"`
+	LastError      string    `json:"last_error"`
+	LastStatusCode int       `json:"last_status_code"`
+	LastChecked    time.Time `json:"last_checked"`
+	AddedAt        time.Time `json:"added_at"`
+}
+
+type keysFileStore struct {
+	Initialized bool                     `json:"initialized"`
+	Keys        []rawUpstreamKeyFileItem `json:"keys"`
+}
+
+func loadKeysFromFile() (bool, []*UpstreamKey) {
+	data, err := os.ReadFile(keysStorageFile)
+	if err != nil {
+		return false, nil
+	}
+	var store keysFileStore
+	if err := json.Unmarshal(data, &store); err != nil {
+		return false, nil
+	}
+	res := make([]*UpstreamKey, 0, len(store.Keys))
+	for _, item := range store.Keys {
+		res = append(res, &UpstreamKey{
+			ID:             item.ID,
+			Key:            item.Key,
+			MaskedKey:      item.MaskedKey,
+			Name:           item.Name,
+			Provider:       item.Provider,
+			BaseURL:        item.BaseURL,
+			RequestCount:   item.RequestCount,
+			ErrorCount:     item.ErrorCount,
+			IsActive:       item.IsActive,
+			LastUsed:       item.LastUsed,
+			LastError:      item.LastError,
+			LastStatusCode: item.LastStatusCode,
+			LastChecked:    item.LastChecked,
+			AddedAt:        item.AddedAt,
+		})
+	}
+	return store.Initialized, res
+}
+
+func saveKeysToFile(keys []*UpstreamKey) {
+	items := make([]rawUpstreamKeyFileItem, 0, len(keys))
+	for _, k := range keys {
+		items = append(items, rawUpstreamKeyFileItem{
+			ID:             k.ID,
+			Key:            k.Key,
+			MaskedKey:      k.MaskedKey,
+			Name:           k.Name,
+			Provider:       k.Provider,
+			BaseURL:        k.BaseURL,
+			RequestCount:   k.RequestCount,
+			ErrorCount:     k.ErrorCount,
+			IsActive:       k.IsActive,
+			LastUsed:       k.LastUsed,
+			LastError:      k.LastError,
+			LastStatusCode: k.LastStatusCode,
+			LastChecked:    k.LastChecked,
+			AddedAt:        k.AddedAt,
+		})
+	}
+	store := keysFileStore{
+		Initialized: true,
+		Keys:        items,
+	}
+	data, err := json.MarshalIndent(store, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(keysStorageFile, data, 0600)
+}
+
 func InitKeyRotator() *KeyRotator {
 	once.Do(func() {
 		baseURL := os.Getenv("UPSTREAM_BASE_URL")
@@ -61,13 +147,31 @@ func InitKeyRotator() *KeyRotator {
 		}
 
 		var keyObjects []*UpstreamKey
+		initialized := false
 
-		// 1. Try loading persisted keys from DB Store (MongoDB / Memory)
-		if db.DB != nil {
+		// 1. Try loading from local persistent file (upstream_keys.json)
+		fileInit, fileKeys := loadKeysFromFile()
+		if fileInit {
+			initialized = true
+			keyObjects = fileKeys
+			log.Printf("[Rotator] 💾 Loaded %d persistent Upstream Keys from %s!", len(keyObjects), keysStorageFile)
+			// Synchronize to DB if DB is active and empty
+			if db.DB != nil && len(keyObjects) > 0 {
+				for _, kObj := range keyObjects {
+					ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+					_ = db.DB.CreateUpstreamKey(ctx, kObj)
+					cancel()
+				}
+			}
+		}
+
+		// 2. Try loading persisted keys from DB Store (MongoDB / Memory) if file was not initialized
+		if !initialized && db.DB != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			persisted, err := db.DB.GetAllUpstreamKeys(ctx)
 			cancel()
 			if err == nil && len(persisted) > 0 {
+				initialized = true
 				log.Printf("[Rotator] 💾 Loaded %d persistent Upstream Keys from Database!", len(persisted))
 				for _, pk := range persisted {
 					kCopy := pk
@@ -76,11 +180,12 @@ func InitKeyRotator() *KeyRotator {
 					}
 					keyObjects = append(keyObjects, &kCopy)
 				}
+				saveKeysToFile(keyObjects)
 			}
 		}
 
-		// 2. If DB is empty, seed from environment variable (.env UPSTREAM_API_KEYS)
-		if len(keyObjects) == 0 {
+		// 3. ONLY if NEVER initialized before (fresh installation), seed from environment variable (.env UPSTREAM_API_KEYS)
+		if !initialized {
 			rawKeys := []string{}
 			if envKeys := os.Getenv("UPSTREAM_API_KEYS"); envKeys != "" {
 				parts := strings.Split(envKeys, ",")
@@ -119,6 +224,7 @@ func InitKeyRotator() *KeyRotator {
 					cancel()
 				}
 			}
+			saveKeysToFile(keyObjects)
 		}
 
 		DefaultRotator = &KeyRotator{
@@ -296,6 +402,7 @@ func (r *KeyRotator) AddKey(ctx context.Context, rawKey string, name string, pro
 	}
 
 	r.keys = append(r.keys, newKey)
+	saveKeysToFile(r.keys)
 	log.Printf("[Rotator] 🔑 Added new Upstream Key %s (%s) to pool. Total keys: %d", newKey.MaskedKey, newKey.Provider, len(r.keys))
 
 	// Persist new key in Database
@@ -334,6 +441,7 @@ func (r *KeyRotator) RemoveKey(id string) error {
 
 	deletedKey := r.keys[idx]
 	r.keys = append(r.keys[:idx], r.keys[idx+1:]...)
+	saveKeysToFile(r.keys)
 	log.Printf("[Rotator] 🗑️ Removed Upstream Key ID %s (%s) from pool. Remaining: %d", targetID, deletedKey.MaskedKey, len(r.keys))
 
 	// Permanently remove from DB
@@ -358,6 +466,7 @@ func (r *KeyRotator) ToggleKey(id string, active bool) (*UpstreamKey, error) {
 	for i, k := range r.keys {
 		if k.ID == id || fmt.Sprintf("%d", i+1) == id {
 			k.IsActive = active
+			saveKeysToFile(r.keys)
 
 			// Update in DB
 			if db.DB != nil {
@@ -374,6 +483,29 @@ func (r *KeyRotator) ToggleKey(id string, active bool) (*UpstreamKey, error) {
 		}
 	}
 	return nil, fmt.Errorf("không tìm thấy key với ID: %s", id)
+}
+
+// GetActiveMachGenKey returns the first active MachGen key configured in the rotator by Admin (or env fallback)
+func (r *KeyRotator) GetActiveMachGenKey() (apiKey string, baseURL string, model string) {
+	if r != nil {
+		r.mu.RLock()
+		for _, k := range r.keys {
+			if k.IsActive && (strings.Contains(strings.ToLower(k.Provider), "machgen") ||
+				strings.Contains(strings.ToLower(k.Name), "machgen") ||
+				strings.Contains(strings.ToLower(k.BaseURL), "replicate") ||
+				strings.Contains(strings.ToLower(k.BaseURL), "pollinations")) {
+				kCopy := k.Key
+				urlCopy := k.BaseURL
+				nameCopy := k.Name
+				r.mu.RUnlock()
+				return kCopy, urlCopy, nameCopy
+			}
+		}
+		r.mu.RUnlock()
+	}
+
+	// Fallback to explicit environment variables
+	return os.Getenv("MACHGEN_API_KEY"), os.Getenv("MACHGEN_API_URL"), os.Getenv("MACHGEN_MODEL")
 }
 
 // Realistic client User-Agents to prevent fingerprinting

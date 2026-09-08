@@ -53,6 +53,19 @@ func (m *MachGenProvider) Name() string {
 	return "MachGen Dual-Reference Engine"
 }
 
+// Configure updates MachGen connection credentials dynamically at runtime
+func (m *MachGenProvider) Configure(baseURL, apiKey, model string) {
+	if baseURL != "" {
+		m.baseURL = strings.TrimRight(baseURL, "/")
+	}
+	if apiKey != "" {
+		m.apiKey = apiKey
+	}
+	if model != "" {
+		m.model = model
+	}
+}
+
 // Generate implements the standard ArtQRProvider interface
 func (m *MachGenProvider) Generate(ctx context.Context, req *GenerationRequest) ([]GeneratedImage, error) {
 	w := req.Width
@@ -95,6 +108,16 @@ func (m *MachGenProvider) GenerateWithTwoReferences(
 	}
 	if height <= 0 {
 		height = 1024
+	}
+
+	// Dynamic fallback to environment variables if not set
+	if m.apiKey == "" {
+		if envKey := os.Getenv("MACHGEN_API_KEY"); envKey != "" {
+			m.apiKey = envKey
+		}
+	}
+	if envURL := os.Getenv("MACHGEN_API_URL"); envURL != "" {
+		m.baseURL = strings.TrimRight(envURL, "/")
 	}
 
 	maskedKey := "none"
