@@ -743,13 +743,34 @@ func (s *Service) processJob(job *model.ArtQRJob, binaryMask *qr.BinaryQRMask, p
 		}
 	}
 
-	// Image 1: Base reference scene (ReferenceImageJPEG)
-	// Image 2: Cleaned transparent QR from background removal (CleanedQRPNG)
-	machgenResultBytes, err := s.machgen.GenerateWithCandidates(
-		ctx,
+	// Anchor the QR on the exact preset rectangle before asking the image model
+	// to edit it. Sending a raw scene and a standalone QR leaves placement up to
+	// the model, which can produce one QR at a guessed location; the deterministic
+	// restoration step would then add a second QR at the configured location.
+	guideImage, guideErr := compositor.BuildGenerationGuide(
 		job.ReferenceImageJPEG,
 		job.CleanedQRPNG,
-		finalPrompt,
+		job.Placement,
+	)
+	if guideErr != nil {
+		job.SetError("Không thể dựng ảnh hướng dẫn QR đúng vị trí: " + guideErr.Error())
+		return
+	}
+
+	modelPrompt := finalPrompt + `
+
+INPUT RULES:
+- Image 1 is the exact target composition. It already contains the QR at the required position and size. Edit that QR in place; do not create, duplicate, move, resize, or place another QR anywhere else.
+- Image 2 is the authoritative transparent QR structure. Use it only to preserve module geometry.
+- Return one coherent artwork containing exactly one QR, at the location shown in Image 1.`
+
+	// Image 1: reference scene with the transparent QR anchored at exact placement.
+	// Image 2: authoritative cleaned transparent QR.
+	machgenResultBytes, err := s.machgen.GenerateWithCandidates(
+		ctx,
+		guideImage,
+		job.CleanedQRPNG,
+		modelPrompt,
 		1024,
 		1024,
 		candidates,
