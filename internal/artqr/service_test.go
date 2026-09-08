@@ -2,8 +2,8 @@ package artqr
 
 import (
 	"context"
+	"os"
 	"testing"
-
 	"time"
 
 	qrcode "github.com/skip2/go-qrcode"
@@ -102,5 +102,45 @@ func TestArtQRPipelineWithMandatoryBackgroundRemovalAndDeterministicRestoration(
 		t.Errorf("expected preset bread_toast, got %s", result.Preset)
 	}
 }
+
+func TestArtQRPipelineWithDoraemonScene(t *testing.T) {
+	sceneBytes, err := os.ReadFile("../../assets/doraemon_bread_scene.jpg")
+	if err != nil {
+		sceneBytes, err = os.ReadFile("assets/doraemon_bread_scene.jpg")
+	}
+	if err != nil {
+		t.Skipf("doraemon_bread_scene.jpg not found: %v", err)
+	}
+
+	expectedPayload := "https://lemas.io.vn/art-qr-verified"
+	qrObj, err := qrcode.New(expectedPayload, qrcode.Highest)
+	if err != nil {
+		t.Fatalf("failed to create test QR: %v", err)
+	}
+	rawPNG, err := qrObj.PNG(512)
+	if err != nil {
+		t.Fatalf("failed to encode test QR: %v", err)
+	}
+
+	s := NewService()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	params := CreateJobParams{
+		UserID:         "unit-tester",
+		QRPNGBytes:     rawPNG,
+		ReferenceBytes: sceneBytes,
+		PresetID:       "bread_toast",
+	}
+
+	result, err := s.GenerateArtQR(ctx, params)
+	if err != nil {
+		t.Fatalf("GenerateArtQR failed: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("expected success=true, got error: %s", result.Error)
+	}
+}
+
 
 

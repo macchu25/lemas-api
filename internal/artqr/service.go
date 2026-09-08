@@ -626,40 +626,48 @@ func (s *Service) processJob(job *model.ArtQRJob, binaryMask *qr.BinaryQRMask, p
 		switch attempt {
 		case 1:
 			// Baseline preset settings
-			log.Printf("[ArtQR] [%s] Restoration Attempt %d/7: baseline preset settings (texture=%.2f, contrast=%.2f, max_lum=%d)",
-				job.ID, attempt, safety.TextureStrength, safety.ContrastMultiplier, safety.MaxDarkLuminance)
+			safety.MinLightLuminance = 185
+			log.Printf("[ArtQR] [%s] Restoration Attempt %d/7: baseline preset settings (texture=%.2f, contrast=%.2f, max_lum=%d, min_light=%d)",
+				job.ID, attempt, safety.TextureStrength, safety.ContrastMultiplier, safety.MaxDarkLuminance, safety.MinLightLuminance)
 		case 2:
-			// Attempt 2: Reduce texture strength
+			// Attempt 2: Reduce texture strength & lift light modules
 			safety.TextureStrength = preset.TextureStrength * 0.65
-			log.Printf("[ArtQR] [%s] Restoration Attempt %d/7: reduced texture strength (texture=%.2f)",
-				job.ID, attempt, safety.TextureStrength)
+			safety.MinLightLuminance = 195
+			log.Printf("[ArtQR] [%s] Restoration Attempt %d/7: reduced texture strength (texture=%.2f, min_light=%d)",
+				job.ID, attempt, safety.TextureStrength, safety.MinLightLuminance)
 		case 3:
 			// Attempt 3: Increase dark/light contrast
 			safety.ContrastMultiplier = preset.ContrastStrength * 1.20
 			safety.MaxDarkLuminance = 85
-			log.Printf("[ArtQR] [%s] Restoration Attempt %d/7: increased contrast, clamped luminance to %d",
-				job.ID, attempt, safety.MaxDarkLuminance)
+			safety.MinLightLuminance = 205
+			log.Printf("[ArtQR] [%s] Restoration Attempt %d/7: increased contrast, clamped max_lum=%d, min_light=%d",
+				job.ID, attempt, safety.MaxDarkLuminance, safety.MinLightLuminance)
 		case 4:
 			// Attempt 4: Make dark modules more uniformly dark toasted brown
 			safety.TextureStrength = 0.06
 			safety.MaxDarkLuminance = 70
-			log.Printf("[ArtQR] [%s] Restoration Attempt %d/7: uniform dark toasted brown modules", job.ID, attempt)
+			safety.MinLightLuminance = 215
+			log.Printf("[ArtQR] [%s] Restoration Attempt %d/7: uniform dark toasted brown modules, min_light=%d", job.ID, attempt, safety.MinLightLuminance)
 		case 5:
 			// Attempt 5: Reduce visual noise & clamp brighter pixels
 			safety.TextureStrength = 0.03
 			safety.MaxDarkLuminance = 55
-			log.Printf("[ArtQR] [%s] Restoration Attempt %d/7: minimal visual noise, aggressive dark clamping", job.ID, attempt)
+			safety.MinLightLuminance = 220
+			log.Printf("[ArtQR] [%s] Restoration Attempt %d/7: minimal visual noise, aggressive dark clamping, min_light=%d", job.ID, attempt, safety.MinLightLuminance)
 		case 6:
 			// Attempt 6: Simplify finder-pattern material (100% solid contrast)
 			safety.SolidifyFinderPattern = true
 			safety.MaxDarkLuminance = 45
-			log.Printf("[ArtQR] [%s] Restoration Attempt %d/7: solidified finder patterns", job.ID, attempt)
+			safety.MinLightLuminance = 225
+			log.Printf("[ArtQR] [%s] Restoration Attempt %d/7: solidified finder patterns, min_light=%d", job.ID, attempt, safety.MinLightLuminance)
 		case 7:
 			// Attempt 7: Increase / clean quiet zone completely
 			safety.CleanQuietZone = true
+			safety.SolidifyFinderPattern = true
 			safety.TextureStrength = 0.01
 			safety.MaxDarkLuminance = 35
-			log.Printf("[ArtQR] [%s] Restoration Attempt %d/7: enforced 100%% clean quiet zone", job.ID, attempt)
+			safety.MinLightLuminance = 230
+			log.Printf("[ArtQR] [%s] Restoration Attempt %d/7: enforced 100%% clean quiet zone & maximum contrast", job.ID, attempt)
 		}
 
 		// Execute Deterministic QR Restoration
@@ -688,6 +696,33 @@ func (s *Service) processJob(job *model.ArtQRJob, binaryMask *qr.BinaryQRMask, p
 			verified = true
 			decodedText = vResult.DecodedPayload
 			break
+		}
+	}
+
+	// Safety Net: If standard attempts did not verify, run Guaranteed Fallback Restoration
+	if !verified {
+		log.Printf("[ArtQR] [%s] Standard attempts exhausted. Executing Guaranteed High-Contrast Safety Net...", job.ID)
+		safetyNet := safety
+		safetyNet.CleanQuietZone = true
+		safetyNet.SolidifyFinderPattern = true
+		safetyNet.TextureStrength = 0.0
+		safetyNet.MaxDarkLuminance = 30
+		safetyNet.MinLightLuminance = 235
+
+		if compBytes, compErr := compositor.RestoreAndComposite(
+			job.ReferenceImageJPEG,
+			machgenResultBytes,
+			binaryMask,
+			preset,
+			safetyNet,
+		); compErr == nil {
+			vResult := qr.ValidateGeneratedQRWithPlacement(compBytes, job.OriginalPayload, job.Placement)
+			if vResult.Valid && vResult.DecodedPayload == job.OriginalPayload {
+				verified = true
+				decodedText = vResult.DecodedPayload
+				finalCompositedPNG = compBytes
+				log.Printf("[ArtQR] [%s] Guaranteed High-Contrast Safety Net SUCCEEDED!", job.ID)
+			}
 		}
 	}
 

@@ -23,6 +23,7 @@ type SafetyConfig struct {
 	TextureStrength       float64 // 0.0 (pure dark color) to 1.0 (raw MachGen texture)
 	ContrastMultiplier    float64 // > 1.0 increases contrast between dark & light
 	MaxDarkLuminance      uint8   // Upper limit on dark module pixel brightness (prevents holes)
+	MinLightLuminance     uint8   // Lower limit on light module pixel brightness (ensures scannability)
 	SolidifyFinderPattern bool    // Force 100% crisp dark tone on finder pattern eyes
 	CleanQuietZone        bool    // Wipe any stray artifacts in the 4-module quiet zone margin
 }
@@ -46,6 +47,7 @@ func DefaultSafetyConfig(preset model.ArtQRPreset) SafetyConfig {
 		TextureStrength:       texStr,
 		ContrastMultiplier:    contrast,
 		MaxDarkLuminance:      maxLum,
+		MinLightLuminance:     185,
 		SolidifyFinderPattern: true,
 		CleanQuietZone:        true,
 	}
@@ -188,17 +190,55 @@ func RestoreAndComposite(
 			}
 
 			// Case B: Light QR Module or Quiet Zone
-			// Retain the underlying light bread / base scene surface
-			// If inside Quiet Zone and CleanQuietZone is enabled, ensure no dark marks punch in
+			inTarget := (x >= px && x < binaryMask.TargetRect.Max.X && y >= py && y < binaryMask.TargetRect.Max.Y)
+			if inTarget {
+				// Light QR Module inside the QR code matrix
+				cR, cG, cB, _ := canvas.At(x, y).RGBA()
+				cR8 := uint8(cR >> 8)
+				cG8 := uint8(cG >> 8)
+				cB8 := uint8(cB >> 8)
+				cLum := uint8((299*uint32(cR8) + 587*uint32(cG8) + 114*uint32(cB8)) / 1000)
+
+				targetMinLum := safety.MinLightLuminance
+				if targetMinLum < 160 {
+					targetMinLum = 160
+				}
+				// Finder pattern light separator ring requires maximum contrast
+				if safety.SolidifyFinderPattern && isFinderPixel(x, y) {
+					if targetMinLum < 220 {
+						targetMinLum = 220
+					}
+				}
+
+				if cLum < targetMinLum {
+					boost := float64(targetMinLum) / float64(int(cLum)+1)
+					if boost > 2.5 {
+						boost = 2.5
+					}
+					// Natural warm cream lift for organic appetizing tone
+					nR := math.Min(255, float64(cR8)*0.55*boost + 255.0*0.45)
+					nG := math.Min(255, float64(cG8)*0.55*boost + 248.0*0.45)
+					nB := math.Min(255, float64(cB8)*0.55*boost + 235.0*0.45)
+					canvas.Set(x, y, color.RGBA{R: uint8(nR), G: uint8(nG), B: uint8(nB), A: 255})
+				}
+				continue
+			}
+
+			// Clean Quiet Zone outside QR matrix
 			if safety.CleanQuietZone && binaryMask.IsQuietZone(x, y) {
 				cR, cG, cB, _ := canvas.At(x, y).RGBA()
-				cLum := uint8((299*(cR>>8) + 587*(cG>>8) + 114*(cB>>8)) / 1000)
-				// If background has accidental dark speckle/burn in quiet zone, brighten it
-				if cLum < 160 {
-					brighten := 1.35
-					nR := math.Min(255, float64(cR>>8)*brighten)
-					nG := math.Min(255, float64(cG>>8)*brighten)
-					nB := math.Min(255, float64(cB>>8)*brighten)
+				cR8 := uint8(cR >> 8)
+				cG8 := uint8(cG >> 8)
+				cB8 := uint8(cB >> 8)
+				cLum := uint8((299*uint32(cR8) + 587*uint32(cG8) + 114*uint32(cB8)) / 1000)
+				if cLum < 205 {
+					boost := float64(205) / float64(int(cLum)+1)
+					if boost > 2.5 {
+						boost = 2.5
+					}
+					nR := math.Min(255, float64(cR8)*0.6*boost + 255.0*0.4)
+					nG := math.Min(255, float64(cG8)*0.6*boost + 252.0*0.4)
+					nB := math.Min(255, float64(cB8)*0.6*boost + 245.0*0.4)
 					canvas.Set(x, y, color.RGBA{R: uint8(nR), G: uint8(nG), B: uint8(nB), A: 255})
 				}
 			}
