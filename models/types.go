@@ -56,6 +56,7 @@ type UpstreamKey struct {
 	Name           string    `json:"name" bson:"name"`
 	Provider       string    `json:"provider" bson:"provider"`
 	BaseURL        string    `json:"base_url,omitempty" bson:"base_url,omitempty"`
+	Model          string    `json:"model,omitempty" bson:"model,omitempty"`
 	RequestCount   uint64    `json:"request_count" bson:"request_count"`
 	ErrorCount     uint64    `json:"error_count" bson:"error_count"`
 	IsActive       bool      `json:"is_active" bson:"is_active"`

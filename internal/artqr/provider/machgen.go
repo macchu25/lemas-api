@@ -191,10 +191,13 @@ func (m *MachGenProvider) callAPIEndpoint(
 		ref2Base64 := base64.StdEncoding.EncodeToString(cleanedQRBytes)
 
 		payload := map[string]interface{}{
-			"model":  modelName,
-			"prompt": promptText,
-			"width":  width,
-			"height": height,
+			"model":           modelName,
+			"prompt":          promptText,
+			"size":            fmt.Sprintf("%dx%d", width, height),
+			"width":           width,
+			"height":          height,
+			"n":               1,
+			"response_format": "b64_json",
 			"reference_images": []string{
 				"data:image/jpeg;base64," + ref1Base64,
 				"data:image/png;base64," + ref2Base64,

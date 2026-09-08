@@ -514,6 +514,7 @@ func AdminAddUpstreamKeyHandler(w http.ResponseWriter, r *http.Request) {
 		Name      string `json:"name"`
 		Provider  string `json:"provider"`
 		BaseURL   string `json:"base_url"`
+		Model     string `json:"model"`
 		TestFirst bool   `json:"test_first"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -522,7 +523,7 @@ func AdminAddUpstreamKeyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rotator := services.InitKeyRotator()
-	created, err := rotator.AddKey(r.Context(), req.Key, req.Name, req.Provider, req.BaseURL, req.TestFirst)
+	created, err := rotator.AddKeyWithModel(r.Context(), req.Key, req.Name, req.Provider, req.BaseURL, req.Model, req.TestFirst)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)

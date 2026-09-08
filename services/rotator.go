@@ -62,6 +62,7 @@ type rawUpstreamKeyFileItem struct {
 	Name           string    `json:"name"`
 	Provider       string    `json:"provider"`
 	BaseURL        string    `json:"base_url"`
+	Model          string    `json:"model,omitempty"`
 	RequestCount   uint64    `json:"request_count"`
 	ErrorCount     uint64    `json:"error_count"`
 	IsActive       bool      `json:"is_active"`
@@ -95,6 +96,7 @@ func loadKeysFromFile() (bool, []*UpstreamKey) {
 			Name:           item.Name,
 			Provider:       item.Provider,
 			BaseURL:        item.BaseURL,
+			Model:          item.Model,
 			RequestCount:   item.RequestCount,
 			ErrorCount:     item.ErrorCount,
 			IsActive:       item.IsActive,
@@ -118,6 +120,7 @@ func saveKeysToFile(keys []*UpstreamKey) {
 			Name:           k.Name,
 			Provider:       k.Provider,
 			BaseURL:        k.BaseURL,
+			Model:          k.Model,
 			RequestCount:   k.RequestCount,
 			ErrorCount:     k.ErrorCount,
 			IsActive:       k.IsActive,
@@ -342,6 +345,11 @@ func (r *KeyRotator) getPoolStatsLocked() map[string]interface{} {
 
 // AddKey registers a new API key to the active rotation pool with an optional account name/alias
 func (r *KeyRotator) AddKey(ctx context.Context, rawKey string, name string, provider string, customBaseURL string, testFirst bool) (*UpstreamKey, error) {
+	return r.AddKeyWithModel(ctx, rawKey, name, provider, customBaseURL, "", testFirst)
+}
+
+// AddKeyWithModel registers a new API key with specific model configuration (e.g. gpt-image-2)
+func (r *KeyRotator) AddKeyWithModel(ctx context.Context, rawKey string, name string, provider string, customBaseURL string, model string, testFirst bool) (*UpstreamKey, error) {
 	rawKey = strings.TrimSpace(rawKey)
 	if rawKey == "" {
 		return nil, fmt.Errorf("API Key không được để trống")
@@ -394,6 +402,7 @@ func (r *KeyRotator) AddKey(ctx context.Context, rawKey string, name string, pro
 		Name:        name,
 		Provider:    provider,
 		BaseURL:     targetBaseURL,
+		Model:       strings.TrimSpace(model),
 		IsActive:    true,
 		LastUsed:    now,
 		LastChecked: now,
@@ -402,7 +411,7 @@ func (r *KeyRotator) AddKey(ctx context.Context, rawKey string, name string, pro
 
 	if testFirst {
 		// Test the key against upstream
-		success, status, msg, _ := r.testSingleKeyInternal(ctx, rawKey, targetBaseURL, "")
+		success, status, msg, _ := r.testSingleKeyInternal(ctx, rawKey, targetBaseURL, model)
 		newKey.LastStatusCode = status
 		newKey.LastError = msg
 		newKey.IsActive = success
@@ -503,19 +512,32 @@ func (r *KeyRotator) GetActiveMachGenKey() (apiKey string, baseURL string, model
 			if k.IsActive && (strings.Contains(strings.ToLower(k.Provider), "machgen") ||
 				strings.Contains(strings.ToLower(k.Name), "machgen") ||
 				strings.Contains(strings.ToLower(k.BaseURL), "replicate") ||
-				strings.Contains(strings.ToLower(k.BaseURL), "pollinations")) {
+				strings.Contains(strings.ToLower(k.BaseURL), "pollinations") ||
+				strings.Contains(strings.ToLower(k.Model), "image") ||
+				strings.Contains(strings.ToLower(k.Model), "gpt") ||
+				strings.Contains(strings.ToLower(k.Model), "flux")) {
 				kCopy := k.Key
 				urlCopy := k.BaseURL
-				nameCopy := k.Name
+				modelCopy := k.Model
+				if modelCopy == "" {
+					modelCopy = os.Getenv("MACHGEN_MODEL")
+				}
+				if modelCopy == "" {
+					modelCopy = "gpt-image-2"
+				}
 				r.mu.RUnlock()
-				return kCopy, urlCopy, nameCopy
+				return kCopy, urlCopy, modelCopy
 			}
 		}
 		r.mu.RUnlock()
 	}
 
 	// Fallback to explicit environment variables
-	return os.Getenv("MACHGEN_API_KEY"), os.Getenv("MACHGEN_API_URL"), os.Getenv("MACHGEN_MODEL")
+	model = os.Getenv("MACHGEN_MODEL")
+	if model == "" {
+		model = "gpt-image-2"
+	}
+	return os.Getenv("MACHGEN_API_KEY"), os.Getenv("MACHGEN_API_URL"), model
 }
 
 // Realistic client User-Agents to prevent fingerprinting

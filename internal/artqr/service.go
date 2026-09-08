@@ -599,7 +599,7 @@ func (s *Service) processJob(job *model.ArtQRJob, binaryMask *qr.BinaryQRMask, p
 		job.ReferenceImageJPEG,
 		job.CleanedQRPNG,
 		finalPrompt,
-		s.machgen.Name(),
+		"", // Automatically uses active configured model (e.g. gpt-image-2, flux, etc.)
 		1024,
 		1024,
 	)
