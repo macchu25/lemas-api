@@ -20,6 +20,9 @@ func DetectQRBounds(img image.Image) (image.Rectangle, error) {
 	reader := qrcode.NewQRCodeReader()
 	res, err := reader.Decode(bmp, nil)
 	if err != nil {
+		if rect, ok := FindDarkModuleBounds(img); ok {
+			return rect, nil
+		}
 		return image.Rectangle{}, fmt.Errorf("qr not detected: %w", err)
 	}
 
@@ -73,4 +76,70 @@ func DetectQRBounds(img image.Image) (image.Rectangle, error) {
 	}
 
 	return image.Rect(minX, minY, maxX, maxY), nil
+}
+
+// FindDarkModuleBounds locates the tight bounding box of dark QR modules by scanning pixels
+func FindDarkModuleBounds(img image.Image) (image.Rectangle, bool) {
+	bounds := img.Bounds()
+	w := bounds.Dx()
+	h := bounds.Dy()
+	if w <= 0 || h <= 0 {
+		return image.Rectangle{}, false
+	}
+	minX, minY, maxX, maxY := bounds.Max.X, bounds.Max.Y, bounds.Min.X, bounds.Min.Y
+	found := false
+
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			r, g, b, a := img.At(x, y).RGBA()
+			if (a >> 8) < 128 {
+				continue
+			}
+			lum := (r*299 + g*587 + b*114) / 1000 >> 8
+			if lum < 140 { // Dark module pixel
+				if x < minX {
+					minX = x
+				}
+				if x > maxX {
+					maxX = x
+				}
+				if y < minY {
+					minY = y
+				}
+				if y > maxY {
+					maxY = y
+				}
+				found = true
+			}
+		}
+	}
+
+	if !found || maxX <= minX || maxY <= minY {
+		return image.Rectangle{}, false
+	}
+
+	// Add minimal 2-module quiet margin (~5% of width)
+	pad := int(float64(maxX-minX) * 0.05)
+	if pad < 4 {
+		pad = 4
+	}
+
+	x0 := minX - pad
+	if x0 < bounds.Min.X {
+		x0 = bounds.Min.X
+	}
+	y0 := minY - pad
+	if y0 < bounds.Min.Y {
+		y0 = bounds.Min.Y
+	}
+	x1 := maxX + pad + 1
+	if x1 > bounds.Max.X {
+		x1 = bounds.Max.X
+	}
+	y1 := maxY + pad + 1
+	if y1 > bounds.Max.Y {
+		y1 = bounds.Max.Y
+	}
+
+	return image.Rect(x0, y0, x1, y1), true
 }

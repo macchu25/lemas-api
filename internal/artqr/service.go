@@ -383,7 +383,7 @@ func (s *Service) CreateJob(ctx context.Context, params CreateJobParams) (*model
 		Threshold:                    0, // Automatic Otsu thresholding
 		ValidateQR:                   true,
 		FallbackOnValidationFailure: true,
-		CropMode:                     qrtrans.CropModeNone,
+		CropMode:                     qrtrans.CropModeCrop,
 	}
 	bgResult, bgErr := qrtrans.ProcessImage(rawImg, bgOpts)
 
