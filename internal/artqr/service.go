@@ -438,7 +438,7 @@ func (s *Service) CreateJob(ctx context.Context, params CreateJobParams) (*model
 	if quietZone <= 0 {
 		quietZone = 4
 	}
-	binaryMask, maskErr := qr.BuildBinaryQRMask(cleanedQRPNG, 1024, 1024, params.Placement, quietZone)
+	binaryMask, maskErr := qr.BuildBinaryQRMaskFromPayload(decoded.Payload, 1024, 1024, params.Placement, quietZone)
 	if maskErr != nil {
 		log.Printf("[ArtQR] [%s] Failed to build authoritative binary QR mask: %v", jobID, maskErr)
 		return nil, fmt.Errorf("không thể khởi tạo mặt nạ module QR: %w", maskErr)

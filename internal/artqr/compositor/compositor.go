@@ -4,14 +4,13 @@ import (
 	"bytes"
 	"encoding/hex"
 	"fmt"
+	_ "golang.org/x/image/webp"
 	"image"
 	"image/color"
 	"image/draw"
 	_ "image/gif"
 	_ "image/jpeg"
 	"image/png"
-	_ "golang.org/x/image/webp"
-	"math"
 	"strings"
 
 	"xkiro-backend/internal/artqr/model"
@@ -211,36 +210,18 @@ func RestoreAndComposite(
 				}
 
 				if cLum < targetMinLum {
-					boost := float64(targetMinLum) / float64(int(cLum)+1)
-					if boost > 2.5 {
-						boost = 2.5
-					}
-					// Natural warm cream lift for organic appetizing tone
-					nR := math.Min(255, float64(cR8)*0.55*boost + 255.0*0.45)
-					nG := math.Min(255, float64(cG8)*0.55*boost + 248.0*0.45)
-					nB := math.Min(255, float64(cB8)*0.55*boost + 235.0*0.45)
-					canvas.Set(x, y, color.RGBA{R: uint8(nR), G: uint8(nG), B: uint8(nB), A: 255})
+					// Guarantee the requested luminance. The old proportional boost
+					// could still leave black scene pixels below the QR threshold.
+					warmR := clamp255(int(targetMinLum) + 15)
+					warmG := clamp255(int(targetMinLum) + 7)
+					canvas.Set(x, y, color.RGBA{R: warmR, G: warmG, B: targetMinLum, A: 255})
 				}
 				continue
 			}
 
 			// Clean Quiet Zone outside QR matrix
 			if safety.CleanQuietZone && binaryMask.IsQuietZone(x, y) {
-				cR, cG, cB, _ := canvas.At(x, y).RGBA()
-				cR8 := uint8(cR >> 8)
-				cG8 := uint8(cG >> 8)
-				cB8 := uint8(cB >> 8)
-				cLum := uint8((299*uint32(cR8) + 587*uint32(cG8) + 114*uint32(cB8)) / 1000)
-				if cLum < 205 {
-					boost := float64(205) / float64(int(cLum)+1)
-					if boost > 2.5 {
-						boost = 2.5
-					}
-					nR := math.Min(255, float64(cR8)*0.6*boost + 255.0*0.4)
-					nG := math.Min(255, float64(cG8)*0.6*boost + 252.0*0.4)
-					nB := math.Min(255, float64(cB8)*0.6*boost + 245.0*0.4)
-					canvas.Set(x, y, color.RGBA{R: uint8(nR), G: uint8(nG), B: uint8(nB), A: 255})
-				}
+				canvas.Set(x, y, color.RGBA{R: 255, G: 252, B: 245, A: 255})
 			}
 		}
 	}

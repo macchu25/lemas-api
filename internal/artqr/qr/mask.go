@@ -3,13 +3,15 @@ package qr
 import (
 	"bytes"
 	"errors"
+	_ "golang.org/x/image/webp"
 	"image"
 	"image/color"
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
-	_ "golang.org/x/image/webp"
 
+	"github.com/makiuchi-d/gozxing/qrcode/decoder"
+	"github.com/makiuchi-d/gozxing/qrcode/encoder"
 	"xkiro-backend/internal/artqr/model"
 )
 
@@ -23,6 +25,87 @@ type BinaryQRMask struct {
 	QuietZoneModules int      // default 4
 	Placement        model.Placement
 	TargetRect       image.Rectangle
+}
+
+// BuildBinaryQRMaskFromPayload regenerates the authoritative QR module matrix
+// from the decoded payload. This avoids guessing module boundaries from an
+// uploaded screenshot or a background-removed/anti-aliased image.
+func BuildBinaryQRMaskFromPayload(payload string, targetWidth, targetHeight int, p model.Placement, quietZone int) (*BinaryQRMask, error) {
+	if payload == "" {
+		return nil, errors.New("empty QR payload")
+	}
+	if targetWidth <= 0 {
+		targetWidth = 1024
+	}
+	if targetHeight <= 0 {
+		targetHeight = 1024
+	}
+	if quietZone <= 0 {
+		quietZone = 4
+	}
+	if !p.IsValid() {
+		p = model.DefaultPlacement()
+	}
+
+	code, err := encoder.Encoder_encode(payload, decoder.ErrorCorrectionLevel_H, nil)
+	if err != nil || code.GetMatrix() == nil {
+		return nil, errors.New("cannot regenerate QR module matrix")
+	}
+	matrix := code.GetMatrix()
+	modDim := matrix.GetWidth()
+	moduleGrid := make([][]bool, modDim)
+	for row := 0; row < modDim; row++ {
+		moduleGrid[row] = make([]bool, modDim)
+		for col := 0; col < modDim; col++ {
+			moduleGrid[row][col] = matrix.Get(col, row) == 1
+		}
+	}
+
+	minDim := targetWidth
+	if targetHeight < minDim {
+		minDim = targetHeight
+	}
+	pSize := int(p.Size * float64(minDim))
+	px := int(p.X * float64(targetWidth))
+	py := int(p.Y * float64(targetHeight))
+	if px < 0 {
+		px = 0
+	}
+	if py < 0 {
+		py = 0
+	}
+	if px+pSize > targetWidth {
+		pSize = targetWidth - px
+	}
+	if py+pSize > targetHeight {
+		pSize = targetHeight - py
+	}
+	if pSize < modDim {
+		return nil, errors.New("QR placement is too small for its payload")
+	}
+	targetRect := image.Rect(px, py, px+pSize, py+pSize)
+	darkMask := make([][]bool, targetHeight)
+	for y := range darkMask {
+		darkMask[y] = make([]bool, targetWidth)
+	}
+	modulePixels := float64(pSize) / float64(modDim)
+	for row := 0; row < modDim; row++ {
+		y0, y1 := py+int(float64(row)*modulePixels), py+int(float64(row+1)*modulePixels)
+		for col := 0; col < modDim; col++ {
+			if !moduleGrid[row][col] {
+				continue
+			}
+			x0, x1 := px+int(float64(col)*modulePixels), px+int(float64(col+1)*modulePixels)
+			for y := y0; y < y1; y++ {
+				for x := x0; x < x1; x++ {
+					darkMask[y][x] = true
+				}
+			}
+		}
+	}
+	return &BinaryQRMask{Width: targetWidth, Height: targetHeight, DarkMask: darkMask,
+		ModuleDim: modDim, ModuleGrid: moduleGrid, QuietZoneModules: quietZone,
+		Placement: p, TargetRect: targetRect}, nil
 }
 
 // BuildBinaryQRMask builds an authoritative pixel-locked binary mask from the cleaned QR image
