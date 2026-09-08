@@ -635,6 +635,38 @@ func (r *KeyRotator) GetActiveMachGenKey() (apiKey string, baseURL string, model
 	return os.Getenv("MACHGEN_API_KEY"), envURL, model
 }
 
+// GetAllActiveImageKeys returns all active upstream keys configured for image generation (gpt-image-2, machgen, apigiare)
+func (r *KeyRotator) GetAllActiveImageKeys() []*UpstreamKey {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	r.ensureEnvMachGenKeyLocked()
+	r.mu.Unlock()
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var result []*UpstreamKey
+	for _, k := range r.keys {
+		if k.IsActive && (strings.Contains(strings.ToLower(k.Provider), "machgen") ||
+			strings.Contains(strings.ToLower(k.Name), "machgen") ||
+			strings.Contains(strings.ToLower(k.BaseURL), "replicate") ||
+			strings.Contains(strings.ToLower(k.BaseURL), "pollinations") ||
+			strings.Contains(strings.ToLower(k.BaseURL), "apigiare") ||
+			strings.Contains(strings.ToLower(k.Model), "image") ||
+			strings.Contains(strings.ToLower(k.Model), "gpt") ||
+			strings.Contains(strings.ToLower(k.Model), "flux")) {
+			kCopy := *k
+			if kCopy.Model == "" {
+				kCopy.Model = "gpt-image-2"
+			}
+			result = append(result, &kCopy)
+		}
+	}
+	return result
+}
+
 // Realistic client User-Agents to prevent fingerprinting
 var stealthUserAgents = []string{
 	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",

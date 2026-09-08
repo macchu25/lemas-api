@@ -125,6 +125,14 @@ func (m *MachGenProvider) Generate(ctx context.Context, req *GenerationRequest) 
 	}, nil
 }
 
+// EndpointConfig specifies upstream endpoint parameters for image synthesis
+type EndpointConfig struct {
+	BaseURL string
+	APIKey  string
+	Model   string
+	Name    string
+}
+
 // GenerateWithTwoReferences sends Reference Image 1 (Base Scene) and Reference Image 2 (Cleaned QR) to MachGen
 func (m *MachGenProvider) GenerateWithTwoReferences(
 	ctx context.Context,
@@ -137,41 +145,37 @@ func (m *MachGenProvider) GenerateWithTwoReferences(
 	if modelName == "" {
 		modelName = m.model
 	}
+	if modelName == "" {
+		modelName = "gpt-image-2"
+	}
+	candidates := []EndpointConfig{
+		{
+			BaseURL: m.baseURL,
+			APIKey:  m.apiKey,
+			Model:   modelName,
+			Name:    "Primary MachGen/API",
+		},
+	}
+	return m.GenerateWithCandidates(ctx, baseSceneBytes, cleanedQRBytes, promptText, width, height, candidates)
+}
+
+// GenerateWithCandidates tries each candidate API endpoint with gpt-image-2 sequentially.
+// If apigiare runs out of quota, it auto-swaps to the next candidate (MachGen) with gpt-image-2.
+// Only if all configured endpoints fail does it fallback to the free engine.
+func (m *MachGenProvider) GenerateWithCandidates(
+	ctx context.Context,
+	baseSceneBytes []byte,
+	cleanedQRBytes []byte,
+	promptText string,
+	width, height int,
+	candidates []EndpointConfig,
+) ([]byte, error) {
 	if width <= 0 {
 		width = 1024
 	}
 	if height <= 0 {
 		height = 1024
 	}
-
-	// Dynamic fallback to environment variables if not set
-	if m.apiKey == "" {
-		if envKey := os.Getenv("MACHGEN_API_KEY"); envKey != "" {
-			m.apiKey = envKey
-		}
-	}
-	if envURL := os.Getenv("MACHGEN_API_URL"); envURL != "" {
-		m.baseURL = strings.TrimRight(envURL, "/")
-	} else if envAptURL := os.Getenv("MACHGEN_APT_URL"); envAptURL != "" {
-		m.baseURL = strings.TrimRight(envAptURL, "/")
-	}
-	if modelName == "" || modelName == "flux" {
-		if envModel := os.Getenv("MACHGEN_MODEL"); envModel != "" {
-			modelName = envModel
-		}
-	}
-
-	maskedKey := "none"
-	if m.apiKey != "" {
-		if len(m.apiKey) > 6 {
-			maskedKey = m.apiKey[:3] + "..." + m.apiKey[len(m.apiKey)-3:]
-		} else {
-			maskedKey = "***"
-		}
-	}
-
-	log.Printf("[MachGen] Dispatching generation request (model=%s, target=%dx%d, key=%s, base_size=%d, qr_size=%d)",
-		modelName, width, height, maskedKey, len(baseSceneBytes), len(cleanedQRBytes))
 
 	start := time.Now()
 
@@ -181,29 +185,53 @@ func (m *MachGenProvider) GenerateWithTwoReferences(
 	m.fallbackReason = ""
 	m.mu.Unlock()
 
-	// Approach A: If API key is configured OR endpoint is an API endpoint (not default pollinations)
-	if m.apiKey != "" || strings.Contains(m.baseURL, "/v1") || strings.Contains(m.baseURL, "replicate") || strings.Contains(m.baseURL, "xkiro") || !strings.Contains(m.baseURL, "pollinations") {
-		result, err := m.callAPIEndpoint(ctx, baseSceneBytes, cleanedQRBytes, promptText, modelName, width, height)
+	// Approach A: Try all candidate endpoints with gpt-image-2
+	for i, cand := range candidates {
+		candBase := strings.TrimRight(strings.TrimSpace(cand.BaseURL), "/")
+		candKey := strings.TrimSpace(cand.APIKey)
+		candModel := strings.TrimSpace(cand.Model)
+		if candModel == "" {
+			candModel = "gpt-image-2"
+		}
+
+		if candKey == "" && !strings.Contains(candBase, "pollinations") && candBase == "" {
+			continue
+		}
+
+		log.Printf("[MachGen] Attempting candidate #%d: [%s] (model=%s, url=%s)", i+1, cand.Name, candModel, candBase)
+
+		// Configure provider with this candidate
+		m.Configure(candBase, candKey, candModel)
+
+		result, err := m.callAPIEndpoint(ctx, baseSceneBytes, cleanedQRBytes, promptText, candModel, width, height)
 		if err == nil && len(result) > 0 {
-			log.Printf("[MachGen] Dual-reference synthesis completed in %v", time.Since(start))
+			if i > 0 {
+				m.mu.Lock()
+				m.lastWasFallback = true
+				m.fallbackReason = fmt.Sprintf("Đã tự động chuyển sang %s (model: %s)", cand.Name, candModel)
+				m.mu.Unlock()
+				log.Printf("[MachGen] 🔄 Successfully swapped to candidate #%d [%s] (model: %s) in %v",
+					i+1, cand.Name, candModel, time.Since(start))
+			} else {
+				log.Printf("[MachGen] Dual-reference synthesis completed with primary endpoint [%s] (model: %s) in %v",
+					cand.Name, candModel, time.Since(start))
+			}
 			return result, nil
 		}
 
-		log.Printf("[MachGen] ⚠️ Primary API endpoint (%s) call failed: %v", m.baseURL, err)
-
-		// Record fallback state so callers (and UI) know auto-swap occurred
-		m.mu.Lock()
-		m.lastWasFallback = true
-		m.fallbackReason = fmt.Sprintf("API chính (%s) gặp sự cố: %v -> Đã tự động swap sang MachGen FLUX Engine", m.baseURL, err)
-		m.mu.Unlock()
-
-		log.Printf("[MachGen] 🔄 Auto-swapping from primary API to MachGen Free FLUX Engine to prevent generation failure...")
+		log.Printf("[MachGen] ⚠️ Candidate #%d [%s] failed: %v", i+1, cand.Name, err)
 	}
 
 	// Approach B: Pollinations / MachGen Free Direct Image Stream Engine
-	result, err := m.callPollinationsStream(ctx, promptText, modelName, width, height)
+	log.Printf("[MachGen] 🔄 All gpt-image-2 candidate endpoints exhausted/failed. Auto-swapping to MachGen Free FLUX Engine...")
+	m.mu.Lock()
+	m.lastWasFallback = true
+	m.fallbackReason = "API chính hết hạn ngạch -> Đã tự động swap sang MachGen FLUX"
+	m.mu.Unlock()
+
+	result, err := m.callPollinationsStream(ctx, promptText, "flux", width, height)
 	if err == nil && len(result) > 100 {
-		log.Printf("[MachGen] Generation completed in %v (%d bytes) [fallback=%v]", time.Since(start), len(result), m.IsFallbackEngaged())
+		log.Printf("[MachGen] Generation completed via free engine in %v (%d bytes)", time.Since(start), len(result))
 		return result, nil
 	}
 
@@ -220,7 +248,7 @@ func (m *MachGenProvider) GenerateWithTwoReferences(
 		return baseSceneBytes, nil
 	}
 
-	return nil, fmt.Errorf("cả API chính và MachGen Engine dự phòng đều thất bại: %w", err)
+	return nil, fmt.Errorf("cả API gpt-image-2 và MachGen Engine dự phòng đều thất bại: %w", err)
 }
 
 func (m *MachGenProvider) callAPIEndpoint(

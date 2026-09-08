@@ -586,10 +586,40 @@ func (s *Service) processJob(job *model.ArtQRJob, binaryMask *qr.BinaryQRMask, p
 	job.UpdateStatus("generating", 35)
 
 	// Step B: MachGen Two-Reference Synthesis
-	// Check if an active MachGen key was added by Admin in Rotator or configured in .env
+	// Collect all active image generation keys (apigiare.vn, machgen.ai, etc.)
+	var candidates []provider.EndpointConfig
 	if services.DefaultRotator != nil {
-		if mgKey, mgURL, mgModel := services.DefaultRotator.GetActiveMachGenKey(); mgKey != "" || mgURL != "" {
-			s.machgen.Configure(mgURL, mgKey, mgModel)
+		for _, k := range services.DefaultRotator.GetAllActiveImageKeys() {
+			model := k.Model
+			if model == "" {
+				model = "gpt-image-2"
+			}
+			candidates = append(candidates, provider.EndpointConfig{
+				BaseURL: k.BaseURL,
+				APIKey:  k.Key,
+				Model:   model,
+				Name:    k.Name,
+			})
+		}
+	}
+	// Fallback to env-configured MachGen if candidate list is empty
+	if len(candidates) == 0 {
+		envKey := os.Getenv("MACHGEN_API_KEY")
+		envURL := os.Getenv("MACHGEN_API_URL")
+		if envURL == "" {
+			envURL = os.Getenv("MACHGEN_APT_URL")
+		}
+		envModel := os.Getenv("MACHGEN_MODEL")
+		if envModel == "" {
+			envModel = "gpt-image-2"
+		}
+		if envKey != "" || envURL != "" {
+			candidates = append(candidates, provider.EndpointConfig{
+				BaseURL: envURL,
+				APIKey:  envKey,
+				Model:   envModel,
+				Name:    "Env MachGen",
+			})
 		}
 	}
 
@@ -601,14 +631,14 @@ func (s *Service) processJob(job *model.ArtQRJob, binaryMask *qr.BinaryQRMask, p
 		return
 	}
 	editPrompt := finalPrompt + "\n\nThe supplied edit image already contains the exact reference scene and the background-removed QR at its required position. Preserve the scene composition. Integrate the QR modules into the named material and lighting while keeping their grid, finder patterns, spacing, and payload unchanged. Do not paste a flat QR sticker and do not move or resize it."
-	machgenResultBytes, err := s.machgen.GenerateWithTwoReferences(
+	machgenResultBytes, err := s.machgen.GenerateWithCandidates(
 		ctx,
 		guideImage,
 		job.CleanedQRPNG,
 		editPrompt,
-		"", // Automatically uses active configured model (e.g. gpt-image-2, flux, etc.)
 		1024,
 		1024,
+		candidates,
 	)
 	if err != nil {
 		log.Printf("[ArtQR] [%s] MachGen guide-image edit failed: %v", job.ID, err)
