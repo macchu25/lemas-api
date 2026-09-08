@@ -408,30 +408,57 @@ func render404HTML(w http.ResponseWriter, slug string) {
 
 func renderContentLandingHTML(w http.ResponseWriter, record *models.IntermediateQR) {
 	escapedPayload := html.EscapeString(record.OriginalPayload)
+
+	// Render original QR code image
+	var origQRImgTag string
+	var origQRDataURL string
+	if origQ, err := qrcode.New(record.OriginalPayload, qrcode.Medium); err == nil {
+		if pngBytes, pngErr := origQ.PNG(450); pngErr == nil {
+			b64 := base64.StdEncoding.EncodeToString(pngBytes)
+			origQRDataURL = "data:image/png;base64," + b64
+			origQRImgTag = fmt.Sprintf(`<div class="qr-card"><img src="%s" alt="Mã QR Gốc" class="qr-img" /><p class="qr-sub">Mã QR Gốc Dùng Để Quét Thanh Toán / Nhận Dữ Liệu</p></div>`, origQRDataURL)
+		}
+	}
+
 	fmt.Fprintf(w, `<!DOCTYPE html>
 <html lang="vi">
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<title>Nội Dung Mã QR - Lemas Art QR</title>
+	<title>Mã QR Gốc - Lemas Gateway</title>
 	<style>
-		body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #070a12; color: #fff; margin: 0; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 16px; box-sizing: border-box; }
-		.card { background: #0d1222; border: 1px solid rgba(255,255,255,0.12); border-radius: 24px; padding: 32px 24px; max-width: 480px; width: 100%%; box-shadow: 0 24px 70px rgba(0,0,0,0.7); text-align: center; }
-		.badge { display: inline-block; background: rgba(16,185,129,0.15); border: 1px solid rgba(16,185,129,0.3); color: #34d399; font-size: 11px; font-weight: bold; padding: 4px 12px; border-radius: 20px; margin-bottom: 16px; }
-		h1 { font-size: 18px; margin: 0 0 12px; color: #fff; }
-		.payload-box { background: #05070d; border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 16px; font-family: monospace; font-size: 12px; color: #38bdf8; text-align: left; word-break: break-all; max-height: 180px; overflow-y: auto; margin-bottom: 20px; line-height: 1.5; }
-		.btn { display: block; width: 100%%; box-sizing: border-box; background: linear-gradient(135deg, #f59e0b, #ec4899); color: #000; font-weight: 800; font-size: 14px; padding: 14px; border-radius: 14px; border: none; cursor: pointer; transition: opacity 0.2s; }
-		.btn:hover { opacity: 0.9; }
-		.hint { font-size: 11px; color: #64748b; margin-top: 14px; }
+		* { box-sizing: border-box; margin: 0; padding: 0; }
+		body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #070a12; color: #fff; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 16px; }
+		.card { background: #0d1222; border: 1px solid rgba(255,255,255,0.12); border-radius: 24px; padding: 28px 20px; max-width: 440px; width: 100%%; box-shadow: 0 24px 70px rgba(0,0,0,0.7); text-align: center; }
+		.badge { display: inline-flex; align-items: center; gap: 6px; background: rgba(16,185,129,0.15); border: 1px solid rgba(16,185,129,0.3); color: #34d399; font-size: 11px; font-weight: bold; padding: 5px 14px; border-radius: 20px; margin-bottom: 14px; }
+		h1 { font-size: 18px; font-weight: 800; margin-bottom: 6px; color: #fff; }
+		p.desc { font-size: 12px; color: #94a3b8; margin-bottom: 18px; }
+		.qr-card { background: #fff; border-radius: 18px; padding: 16px; display: inline-block; margin-bottom: 18px; box-shadow: 0 10px 30px rgba(0,0,0,0.4); max-width: 100%%; }
+		.qr-img { width: 240px; height: 240px; max-width: 100%%; display: block; margin: 0 auto; object-contain: contain; }
+		.qr-sub { font-size: 11px; font-weight: 700; color: #0f172a; margin-top: 10px; }
+		.payload-box { background: #05070d; border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 12px; font-family: monospace; font-size: 11px; color: #38bdf8; text-align: left; word-break: break-all; max-height: 100px; overflow-y: auto; margin-bottom: 16px; line-height: 1.5; }
+		.actions { display: flex; flex-direction: column; gap: 10px; }
+		.btn-primary { background: linear-gradient(135deg, #10b981, #06b6d4); color: #041017; font-weight: 800; font-size: 13px; padding: 13px; border-radius: 12px; border: none; cursor: pointer; text-decoration: none; display: flex; align-items: center; justify-content: center; gap: 6px; }
+		.btn-secondary { background: rgba(255,255,255,0.08); color: #cbd5e1; font-weight: 600; font-size: 12px; padding: 11px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); cursor: pointer; }
+		.hint { font-size: 10px; color: #64748b; margin-top: 14px; }
 	</style>
 </head>
 <body>
 	<div class="card">
-		<div class="badge">⚡ Lemas Art QR Gateway</div>
-		<h1>Nội Dung Mã QR Chuyển Tiếp</h1>
+		<div class="badge">⚡ Đã Chuyển Về Mã QR Gốc</div>
+		<h1>Mã QR Thanh Toán / Gốc</h1>
+		<p class="desc">Bạn đã quét từ mã QR rút gọn tối giản (21×21 ô) của Lemas AI</p>
+		
+		%s
+
 		<div class="payload-box" id="payloadText">%s</div>
-		<button class="btn" onclick="copyContent()">📋 Sao Chép Nội Dung</button>
-		<p class="hint">Được chuyển tiếp bảo mật qua hạ tầng Lemas.AI (Mã nén tối giản)</p>
+
+		<div class="actions">
+			<a href="%s" download="ma_qr_goc.png" class="btn-primary">💾 Tải Ảnh QR Gốc Vào Điện Thoại</a>
+			<button class="btn-secondary" onclick="copyContent()">📋 Sao Chép Chuỗi Dữ Liệu</button>
+		</div>
+
+		<p class="hint">Bạn có thể dùng App Ngân Hàng chọn ảnh vừa tải để thanh toán tức thì.</p>
 	</div>
 	<script>
 		function copyContent() {
@@ -442,7 +469,7 @@ func renderContentLandingHTML(w http.ResponseWriter, record *models.Intermediate
 		}
 	</script>
 </body>
-</html>`, escapedPayload)
+</html>`, origQRImgTag, escapedPayload, origQRDataURL)
 }
 
 // ResolveIntermediateQRHandler handles GET /api/r/resolve?slug={slug}
