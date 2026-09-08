@@ -307,7 +307,7 @@ func (r *KeyRotator) ensureEnvMachGenKeyLocked() {
 		envURL = strings.TrimSpace(os.Getenv("MACHGEN_APT_URL")) // Support common typo on Railway
 	}
 	if envURL == "" {
-		envURL = "https://image.pollinations.ai"
+		envURL = "https://apigiare.vn/v1"
 	}
 
 	model := strings.TrimSpace(os.Getenv("MACHGEN_MODEL"))
@@ -603,7 +603,7 @@ func (r *KeyRotator) GetActiveMachGenKey() (apiKey string, baseURL string, model
 			if k.IsActive && (strings.Contains(strings.ToLower(k.Provider), "machgen") ||
 				strings.Contains(strings.ToLower(k.Name), "machgen") ||
 				strings.Contains(strings.ToLower(k.BaseURL), "replicate") ||
-				strings.Contains(strings.ToLower(k.BaseURL), "pollinations") ||
+				strings.Contains(strings.ToLower(k.BaseURL), "apigiare") ||
 				strings.Contains(strings.ToLower(k.Model), "image") ||
 				strings.Contains(strings.ToLower(k.Model), "gpt") ||
 				strings.Contains(strings.ToLower(k.Model), "flux")) {
@@ -652,7 +652,6 @@ func (r *KeyRotator) GetAllActiveImageKeys() []*UpstreamKey {
 		if k.IsActive && (strings.Contains(strings.ToLower(k.Provider), "machgen") ||
 			strings.Contains(strings.ToLower(k.Name), "machgen") ||
 			strings.Contains(strings.ToLower(k.BaseURL), "replicate") ||
-			strings.Contains(strings.ToLower(k.BaseURL), "pollinations") ||
 			strings.Contains(strings.ToLower(k.BaseURL), "apigiare") ||
 			strings.Contains(strings.ToLower(k.Model), "image") ||
 			strings.Contains(strings.ToLower(k.Model), "gpt") ||

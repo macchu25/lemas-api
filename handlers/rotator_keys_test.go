@@ -119,7 +119,7 @@ func TestAdminUpstreamKeyDatabasePersistence(t *testing.T) {
 		MaskedKey: "sk••••12345",
 		Name:      "Persisted Key #1",
 		Provider:  "MachGen Studio",
-		BaseURL:   "https://image.pollinations.ai",
+		BaseURL:   "https://apigiare.vn/v1",
 		IsActive:  true,
 	}
 

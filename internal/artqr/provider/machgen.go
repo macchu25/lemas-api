@@ -37,8 +37,7 @@ func NewMachGenProvider() *MachGenProvider {
 		apiURL = os.Getenv("UPSTREAM_BASE_URL")
 	}
 	if apiURL == "" {
-		// Default to Pollinations MachGen engine
-		apiURL = "https://image.pollinations.ai"
+		apiURL = "https://apigiare.vn/v1"
 	}
 
 	apiKey := os.Getenv("MACHGEN_API_KEY")
@@ -222,33 +221,18 @@ func (m *MachGenProvider) GenerateWithCandidates(
 		log.Printf("[MachGen] ⚠️ Candidate #%d [%s] failed: %v", i+1, cand.Name, err)
 	}
 
-	// Approach B: Pollinations / MachGen Free Direct Image Stream Engine
-	log.Printf("[MachGen] 🔄 All gpt-image-2 candidate endpoints exhausted/failed. Auto-swapping to MachGen Free FLUX Engine...")
-	m.mu.Lock()
-	m.lastWasFallback = true
-	m.fallbackReason = "API chính hết hạn ngạch -> Đã tự động swap sang MachGen FLUX"
-	m.mu.Unlock()
-
-	result, err := m.callPollinationsStream(ctx, promptText, "flux", width, height)
-	if err == nil && len(result) > 100 {
-		log.Printf("[MachGen] Generation completed via free engine in %v (%d bytes)", time.Since(start), len(result))
-		return result, nil
-	}
-
-	log.Printf("[MachGen] ⚠️ MachGen free engine stream failed (%v)", err)
-
-	// Safe graceful degradation: If both upstream API and free AI stream fail,
-	// use baseSceneBytes as living canvas so Art QR generation NEVER crashes
+	// Safe graceful degradation: If all gpt-image-2 candidate endpoints fail or run out of quota,
+	// use baseSceneBytes as living canvas so Art QR generation NEVER crashes and preserves the reference image!
 	if len(baseSceneBytes) > 0 {
 		m.mu.Lock()
 		m.lastWasFallback = true
-		m.fallbackReason = "API chính và MachGen Free Engine bận -> Đã dùng ảnh mẫu tham chiếu làm nền"
+		m.fallbackReason = "API gpt-image-2 tạm hết hạn ngạch -> Phục chế trực tiếp trên ảnh tham chiếu"
 		m.mu.Unlock()
-		log.Printf("[MachGen] 🛡️ Using reference base scene (%d bytes) to guarantee 100%% generation uptime", len(baseSceneBytes))
+		log.Printf("[MachGen] 🛡️ All gpt-image-2 endpoints failed. Using reference base scene (%d bytes) to guarantee 100%% generation uptime", len(baseSceneBytes))
 		return baseSceneBytes, nil
 	}
 
-	return nil, fmt.Errorf("cả API gpt-image-2 và MachGen Engine dự phòng đều thất bại: %w", err)
+	return nil, fmt.Errorf("cả API gpt-image-2 chính (apigiare) và dự phòng (machgen) đều hết hạn ngạch hoặc không khả dụng; vui lòng kiểm tra số dư API key")
 }
 
 func (m *MachGenProvider) callAPIEndpoint(
@@ -548,89 +532,6 @@ func (m *MachGenProvider) imageData(ctx context.Context, imageURL, b64 string) (
 		return m.fetchImageFromURL(ctx, imageURL)
 	}
 	return nil, fmt.Errorf("image result is empty")
-}
-
-func (m *MachGenProvider) callPollinationsStream(
-	ctx context.Context,
-	promptText string,
-	modelName string,
-	width, height int,
-) ([]byte, error) {
-	// Clean prompt: strip image edit instruction trailers so FLUX receives a pure visual description
-	cleanPrompt := promptText
-	if idx := strings.Index(cleanPrompt, "\n\nThe supplied edit image"); idx != -1 {
-		cleanPrompt = strings.TrimSpace(cleanPrompt[:idx])
-	}
-	if idx := strings.Index(cleanPrompt, "\n\n"); idx != -1 && len(cleanPrompt) > 200 {
-		cleanPrompt = strings.TrimSpace(cleanPrompt[:idx])
-	}
-
-	// Model mapping for Pollinations:
-	// Pollinations supports "flux", "flux-realism", "turbo". It does not support "gpt-image-2".
-	pollinationsModel := "flux"
-	lowerModel := strings.ToLower(modelName)
-	if strings.Contains(lowerModel, "turbo") {
-		pollinationsModel = "turbo"
-	} else if strings.Contains(lowerModel, "realism") {
-		pollinationsModel = "flux-realism"
-	}
-
-	// Dynamic seed for distinct artistic synthesis
-	seed := (time.Now().UnixNano() / 1000) % 100000000
-
-	encodedPrompt := url.PathEscape(cleanPrompt)
-	targetURL := fmt.Sprintf("https://image.pollinations.ai/prompt/%s?width=%d&height=%d&model=%s&seed=%d&nologo=true&enhance=true",
-		encodedPrompt, width, height, url.QueryEscape(pollinationsModel), seed)
-
-	log.Printf("[MachGen] Calling Pollinations FLUX Engine (model=%s, seed=%d, length=%d chars)",
-		pollinationsModel, seed, len(cleanPrompt))
-
-	req, err := http.NewRequestWithContext(ctx, "GET", targetURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-
-	resp, err := m.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusTooManyRequests {
-		resp.Body.Close()
-		log.Printf("[MachGen] Pollinations FLUX rate-limited (429), retrying with turbo model...")
-		time.Sleep(500 * time.Millisecond)
-		turboURL := fmt.Sprintf("https://image.pollinations.ai/prompt/%s?width=%d&height=%d&model=turbo&seed=%d&nologo=true",
-			encodedPrompt, width, height, seed)
-		turboReq, tErr := http.NewRequestWithContext(ctx, "GET", turboURL, nil)
-		if tErr == nil {
-			turboReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-			if tResp, dErr := m.httpClient.Do(turboReq); dErr == nil {
-				defer tResp.Body.Close()
-				if tResp.StatusCode >= 200 && tResp.StatusCode < 300 {
-					if tData, rErr := io.ReadAll(tResp.Body); rErr == nil && len(tData) > 100 {
-						return tData, nil
-					}
-				}
-			}
-		}
-		return nil, fmt.Errorf("HTTP 429 from image server")
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("HTTP %d from image server", resp.StatusCode)
-	}
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	if len(data) < 100 {
-		return nil, fmt.Errorf("empty image received from provider")
-	}
-
-	return data, nil
 }
 
 func (m *MachGenProvider) fetchImageFromURL(ctx context.Context, imgURL string) ([]byte, error) {

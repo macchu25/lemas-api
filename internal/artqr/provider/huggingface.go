@@ -337,48 +337,22 @@ func (h *HuggingFaceProvider) generateEdgeFallback(ctx context.Context, req *Gen
 
 	for i := 0; i < count; i++ {
 		seed := req.Seed + i*777
-		encodedPrompt := url.QueryEscape(req.Prompt)
-		w := req.Width
-		h := req.Height
-		if w <= 0 {
-			w = 1024
-		}
-		if h <= 0 {
-			h = 1024
-		}
-
-		targetURL := fmt.Sprintf("https://image.pollinations.ai/prompt/%s?width=%d&height=%d&seed=%d&nologo=true&model=flux",
-			encodedPrompt, w, h, seed)
-
-		fetchReq, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+		fallbackURL := fallbackArtURLs[i%len(fallbackArtURLs)]
 		var imgBytes []byte
-		if err == nil {
-			fetchReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-			resp, fetchErr := client.Do(fetchReq)
-			if fetchErr == nil && resp.StatusCode == http.StatusOK {
-				imgBytes, _ = io.ReadAll(io.LimitReader(resp.Body, 10<<20))
-				resp.Body.Close()
-			} else if resp != nil {
-				resp.Body.Close()
-			}
-		}
 
-		// Instant high-res art fallback if external edge API is busy or timed out
-		if len(imgBytes) == 0 {
-			fallbackURL := fallbackArtURLs[i%len(fallbackArtURLs)]
-			fbReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, fallbackURL, nil)
-			fbResp, fbErr := (&http.Client{Timeout: 5 * time.Second}).Do(fbReq)
+		fbReq, err := http.NewRequestWithContext(ctx, http.MethodGet, fallbackURL, nil)
+		if err == nil {
+			fbResp, fbErr := client.Do(fbReq)
 			if fbErr == nil && fbResp.StatusCode == http.StatusOK {
 				imgBytes, _ = io.ReadAll(io.LimitReader(fbResp.Body, 10<<20))
 				fbResp.Body.Close()
 			} else if fbResp != nil {
 				fbResp.Body.Close()
 			}
-			targetURL = fallbackURL
 		}
 
 		results = append(results, GeneratedImage{
-			URL:      targetURL,
+			URL:      fallbackURL,
 			PNGBytes: imgBytes,
 			Seed:     seed,
 		})
