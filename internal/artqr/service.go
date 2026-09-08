@@ -618,6 +618,16 @@ func (s *Service) processJob(job *model.ArtQRJob, binaryMask *qr.BinaryQRMask, p
 		log.Printf("[ArtQR] [%s] MachGen aesthetic generation received (%d bytes)", job.ID, len(machgenResultBytes))
 	}
 
+	// Check if primary API failed or ran out of quota and auto-swapped to MachGen engine
+	if s.machgen.IsFallbackEngaged() {
+		job.FallbackMode = true
+		log.Printf("[ArtQR] [%s] Primary image API exhausted or failed. Fallback to MachGen FLUX engine engaged (%s)",
+			job.ID, s.machgen.GetFallbackReason())
+		if services.DefaultRotator != nil && s.machgen.GetAPIKey() != "" {
+			services.DefaultRotator.RecordKeyFailure(s.machgen.GetAPIKey(), "Hết số dư / Lỗi API (đã tự động swap sang MachGen FLUX)", true)
+		}
+	}
+
 	job.UpdateStatus("validating", 65)
 
 	// Step C: Progressive Safety Retry Pipeline (Attempts 1 to 7)

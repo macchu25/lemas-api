@@ -564,6 +564,33 @@ func (r *KeyRotator) ToggleKey(id string, active bool) (*UpstreamKey, error) {
 	return nil, fmt.Errorf("không tìm thấy key với ID: %s", id)
 }
 
+// RecordKeyFailure updates error stats on a key and optionally deactivates it (e.g. out of quota)
+func (r *KeyRotator) RecordKeyFailure(rawKey string, errMsg string, deactivate bool) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for _, k := range r.keys {
+		if k.Key == rawKey || (rawKey == "" && strings.Contains(strings.ToLower(k.BaseURL), "apigiare")) {
+			k.LastError = errMsg
+			atomic.AddUint64(&k.ErrorCount, 1)
+			if deactivate {
+				k.IsActive = false
+				log.Printf("[Rotator] ⚠️ Deactivated key [%s] due to fatal error / out of quota: %s", k.MaskedKey, errMsg)
+			}
+			saveKeysToFile(r.keys)
+			if db.DB != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				_ = db.DB.UpdateUpstreamKey(ctx, k)
+				cancel()
+			}
+			break
+		}
+	}
+}
+
 // GetActiveMachGenKey returns the first active MachGen key configured in the rotator by Admin (or env fallback)
 func (r *KeyRotator) GetActiveMachGenKey() (apiKey string, baseURL string, model string) {
 	if r != nil {
