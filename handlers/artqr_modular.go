@@ -133,7 +133,7 @@ func GenerateArtQRHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Handle synchronous generation request
 	if isSync {
-		syncCtx, syncCancel := context.WithTimeout(r.Context(), 120*time.Second)
+		syncCtx, syncCancel := context.WithTimeout(r.Context(), 310*time.Second)
 		defer syncCancel()
 		result, err := defaultArtQRService.GenerateArtQR(syncCtx, params)
 		w.Header().Set("Content-Type", "application/json")
