@@ -297,6 +297,7 @@ func (s *Service) loadPresetSceneImage(preset *model.ArtQRPreset) []byte {
 		filename = strings.TrimPrefix(filename, "presets/")
 		candidates := []string{
 			filepath.Join("assets", filename),
+			filepath.Join("..", "..", "assets", filename),
 			filepath.Join("../server/assets", filename),
 			filepath.Join("client/public/presets", filename),
 			filepath.Join("../client/public/presets", filename),
@@ -331,6 +332,7 @@ func loadDefaultSceneImage(presetID string) []byte {
 	if presetID == "bread_toast" || presetID == "" {
 		candidates := []string{
 			"assets/doraemon_bread_scene.jpg",
+			"../../assets/doraemon_bread_scene.jpg",
 			"../server/assets/doraemon_bread_scene.jpg",
 			"client/public/presets/doraemon_bread_scene.jpg",
 			"../client/public/presets/doraemon_bread_scene.jpg",
@@ -380,10 +382,10 @@ func (s *Service) CreateJob(ctx context.Context, params CreateJobParams) (*model
 
 	// Call existing QR background-removal function
 	bgOpts := &qrtrans.Options{
-		Threshold:                    0, // Automatic Otsu thresholding
-		ValidateQR:                   true,
+		Threshold:                   0, // Automatic Otsu thresholding
+		ValidateQR:                  true,
 		FallbackOnValidationFailure: true,
-		CropMode:                     qrtrans.CropModeCrop,
+		CropMode:                    qrtrans.CropModeCrop,
 	}
 	bgResult, bgErr := qrtrans.ProcessImage(rawImg, bgOpts)
 
@@ -431,6 +433,9 @@ func (s *Service) CreateJob(ctx context.Context, params CreateJobParams) (*model
 		if len(baseScene) > 0 {
 			log.Printf("[ArtQR] [%s] Loaded preset scene reference (%d bytes)", jobID, len(baseScene))
 		}
+	}
+	if len(baseScene) == 0 {
+		return nil, fmt.Errorf("không tải được ảnh tham chiếu của phong cách %q; không thể tạo Art QR chỉ có nền trống", preset.Name)
 	}
 
 	// 5. Build authoritative binary QR mask & control canvas

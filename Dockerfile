@@ -14,6 +14,7 @@ FROM alpine:latest
 RUN apk --no-cache add ca-certificates tzdata
 WORKDIR /app
 COPY --from=builder /app/lemas-server /app/lemas-server
+COPY --from=builder /app/assets /app/assets
 
 EXPOSE 8080
 CMD ["/app/lemas-server"]
