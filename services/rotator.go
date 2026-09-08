@@ -239,6 +239,10 @@ func InitKeyRotator() *KeyRotator {
 			baseURL: baseURL,
 		}
 
+		DefaultRotator.mu.Lock()
+		DefaultRotator.ensureEnvMachGenKeyLocked()
+		DefaultRotator.mu.Unlock()
+
 		log.Printf("[Rotator] 🚀 Initialized Brain Engine with %d upstream rotating API keys (Base: %s)", len(keyObjects), baseURL)
 		log.Println("[Rotator] 🛡️ Stealth Mode active: Passive on-demand health tracking enabled (Startup bulk ping disabled)")
 	})
@@ -276,6 +280,10 @@ func (r *KeyRotator) GetPoolStats() map[string]interface{} {
 }
 
 func (r *KeyRotator) GetAllKeys() []*UpstreamKey {
+	r.mu.Lock()
+	r.ensureEnvMachGenKeyLocked()
+	r.mu.Unlock()
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -286,6 +294,58 @@ func (r *KeyRotator) GetAllKeys() []*UpstreamKey {
 		res[i] = &copyKey
 	}
 	return res
+}
+
+func (r *KeyRotator) ensureEnvMachGenKeyLocked() {
+	envMachKey := strings.TrimSpace(os.Getenv("MACHGEN_API_KEY"))
+	if envMachKey == "" {
+		return
+	}
+
+	envURL := strings.TrimSpace(os.Getenv("MACHGEN_API_URL"))
+	if envURL == "" {
+		envURL = strings.TrimSpace(os.Getenv("MACHGEN_APT_URL")) // Support common typo on Railway
+	}
+	if envURL == "" {
+		envURL = "https://image.pollinations.ai"
+	}
+
+	model := strings.TrimSpace(os.Getenv("MACHGEN_MODEL"))
+	if model == "" {
+		model = "gpt-image-2"
+	}
+
+	// Check if already in r.keys
+	for _, k := range r.keys {
+		if k.Key == envMachKey || k.ID == "machgen-env-railway" {
+			k.Key = envMachKey
+			k.MaskedKey = MaskKey(envMachKey)
+			k.BaseURL = envURL
+			k.Model = model
+			k.Provider = "MachGen Studio"
+			return
+		}
+	}
+
+	// Append as new key
+	now := time.Now()
+	newKey := &UpstreamKey{
+		ID:          "machgen-env-railway",
+		Key:         envMachKey,
+		MaskedKey:   MaskKey(envMachKey),
+		Name:        fmt.Sprintf("Railway MachGen (%s)", model),
+		Provider:    "MachGen Studio",
+		BaseURL:     envURL,
+		Model:       model,
+		IsActive:    true,
+		LastUsed:    now,
+		LastChecked: now,
+		AddedAt:     now,
+	}
+	r.keys = append(r.keys, newKey)
+	saveKeysToFile(r.keys)
+	log.Printf("[Rotator] 🔑 Automatically synchronized Railway MachGen key (%s, Model: %s, URL: %s) to pool",
+		newKey.MaskedKey, model, envURL)
 }
 
 func (r *KeyRotator) getPoolStatsLocked() map[string]interface{} {
@@ -507,6 +567,10 @@ func (r *KeyRotator) ToggleKey(id string, active bool) (*UpstreamKey, error) {
 // GetActiveMachGenKey returns the first active MachGen key configured in the rotator by Admin (or env fallback)
 func (r *KeyRotator) GetActiveMachGenKey() (apiKey string, baseURL string, model string) {
 	if r != nil {
+		r.mu.Lock()
+		r.ensureEnvMachGenKeyLocked()
+		r.mu.Unlock()
+
 		r.mu.RLock()
 		for _, k := range r.keys {
 			if k.IsActive && (strings.Contains(strings.ToLower(k.Provider), "machgen") ||
@@ -537,7 +601,11 @@ func (r *KeyRotator) GetActiveMachGenKey() (apiKey string, baseURL string, model
 	if model == "" {
 		model = "gpt-image-2"
 	}
-	return os.Getenv("MACHGEN_API_KEY"), os.Getenv("MACHGEN_API_URL"), model
+	envURL := os.Getenv("MACHGEN_API_URL")
+	if envURL == "" {
+		envURL = os.Getenv("MACHGEN_APT_URL")
+	}
+	return os.Getenv("MACHGEN_API_KEY"), envURL, model
 }
 
 // Realistic client User-Agents to prevent fingerprinting

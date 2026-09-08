@@ -26,6 +26,9 @@ type MachGenProvider struct {
 func NewMachGenProvider() *MachGenProvider {
 	apiURL := os.Getenv("MACHGEN_API_URL")
 	if apiURL == "" {
+		apiURL = os.Getenv("MACHGEN_APT_URL") // Fallback for common typo
+	}
+	if apiURL == "" {
 		apiURL = os.Getenv("UPSTREAM_BASE_URL")
 	}
 	if apiURL == "" {
@@ -36,7 +39,7 @@ func NewMachGenProvider() *MachGenProvider {
 	apiKey := os.Getenv("MACHGEN_API_KEY")
 	modelName := os.Getenv("MACHGEN_MODEL")
 	if modelName == "" {
-		modelName = "flux"
+		modelName = "gpt-image-2"
 	}
 
 	return &MachGenProvider{
@@ -118,6 +121,13 @@ func (m *MachGenProvider) GenerateWithTwoReferences(
 	}
 	if envURL := os.Getenv("MACHGEN_API_URL"); envURL != "" {
 		m.baseURL = strings.TrimRight(envURL, "/")
+	} else if envAptURL := os.Getenv("MACHGEN_APT_URL"); envAptURL != "" {
+		m.baseURL = strings.TrimRight(envAptURL, "/")
+	}
+	if modelName == "" || modelName == "flux" {
+		if envModel := os.Getenv("MACHGEN_MODEL"); envModel != "" {
+			modelName = envModel
+		}
 	}
 
 	maskedKey := "none"
@@ -134,8 +144,8 @@ func (m *MachGenProvider) GenerateWithTwoReferences(
 
 	start := time.Now()
 
-	// Approach A: If endpoint is a standard multi-modal OpenAI-compatible or Replicate / HTTP API
-	if strings.Contains(m.baseURL, "/v1") || strings.Contains(m.baseURL, "replicate") || strings.Contains(m.baseURL, "xkiro") {
+	// Approach A: If API key is configured OR endpoint is an API endpoint (not default pollinations)
+	if m.apiKey != "" || strings.Contains(m.baseURL, "/v1") || strings.Contains(m.baseURL, "replicate") || strings.Contains(m.baseURL, "xkiro") || !strings.Contains(m.baseURL, "pollinations") {
 		result, err := m.callAPIEndpoint(ctx, baseSceneBytes, cleanedQRBytes, promptText, modelName, width, height)
 		if err == nil && len(result) > 0 {
 			log.Printf("[MachGen] Dual-reference synthesis completed in %v", time.Since(start))
@@ -205,7 +215,11 @@ func (m *MachGenProvider) callAPIEndpoint(
 		}
 
 		jsonBytes, _ := json.Marshal(payload)
-		req, err = http.NewRequestWithContext(ctx, "POST", m.baseURL+"/images/generations", bytes.NewReader(jsonBytes))
+		endpointURL := m.baseURL
+		if !strings.HasSuffix(endpointURL, "/images/generations") {
+			endpointURL = strings.TrimRight(endpointURL, "/") + "/images/generations"
+		}
+		req, err = http.NewRequestWithContext(ctx, "POST", endpointURL, bytes.NewReader(jsonBytes))
 		if err != nil {
 			return nil, err
 		}
