@@ -252,8 +252,18 @@ func (r *KeyRotator) GetNextKey() (*UpstreamKey, int) {
 		return nil, -1
 	}
 
-	idx := int(atomic.AddUint64(&r.currentIndex, 1) % uint64(total))
-	return r.keys[idx], idx
+	// Find the next active key in pool
+	startIdx := int(atomic.AddUint64(&r.currentIndex, 1) % uint64(total))
+	for i := 0; i < total; i++ {
+		checkIdx := (startIdx + i) % total
+		k := r.keys[checkIdx]
+		if k.IsActive {
+			return k, checkIdx
+		}
+	}
+
+	// If all keys are inactive, return nil
+	return nil, -1
 }
 
 func (r *KeyRotator) GetPoolStats() map[string]interface{} {
