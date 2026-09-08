@@ -91,7 +91,12 @@ func main() {
 	mux.HandleFunc("/api/art-qr/analyze-style", handlers.AnalyzeStyleHandler)
 	mux.HandleFunc("/api/art-qr/jobs/", handlers.GetArtQRJobHandler)
 	mux.HandleFunc("/api/art-qr/jobs", handlers.GetArtQRJobHandler)
+	mux.HandleFunc("/api/art-qr/presets/", handlers.ArtQRPresetItemHandler)
 	mux.HandleFunc("/api/art-qr/presets", handlers.ArtQRPresetsHandler)
+	mux.HandleFunc("/api/art-qr/admin/presets/", handlers.AdminArtQRPresetsHandler)
+	mux.HandleFunc("/api/art-qr/admin/presets", handlers.AdminArtQRPresetsHandler)
+	mux.HandleFunc("/api/art-qr/admin/upload-scene", handlers.AdminUploadSceneHandler)
+	mux.Handle("/presets/", http.StripPrefix("/presets/", http.FileServer(http.Dir("assets"))))
 
 	// User Giftcode Redemption & Daily Image Quota
 	mux.HandleFunc("/api/user/giftcode/redeem", handlers.AuthMiddleware(handlers.RedeemGiftcodeHandler))

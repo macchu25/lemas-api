@@ -2,10 +2,14 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"xkiro-backend/internal/artqr"
 	"xkiro-backend/internal/artqr/model"
@@ -255,3 +259,154 @@ func GetArtQRJobHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(job.Snapshot())
 }
+
+// ArtQRPresetItemHandler handles GET /api/art-qr/presets/:id
+func ArtQRPresetItemHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonError(w, "Phương thức không được hỗ trợ", http.StatusMethodNotAllowed)
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/api/art-qr/presets/")
+	id = strings.TrimPrefix(id, "/")
+	if id == "" {
+		ArtQRPresetsHandler(w, r)
+		return
+	}
+	preset, ok := defaultArtQRService.GetPreset(id)
+	if !ok {
+		jsonError(w, "Không tìm thấy phong cách", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(preset)
+}
+
+// AdminArtQRPresetsHandler handles full admin CRUD for Art QR presets
+// POST /api/art-qr/admin/presets (Create/Update)
+// DELETE /api/art-qr/admin/presets/:id (Delete)
+func AdminArtQRPresetsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method == http.MethodGet {
+		presets := defaultArtQRService.GetPresets()
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"presets": presets,
+		})
+		return
+	}
+
+	if r.Method == http.MethodDelete {
+		path := r.URL.Path
+		id := strings.TrimPrefix(path, "/api/art-qr/admin/presets/")
+		id = strings.TrimPrefix(id, "/")
+		if id == "" {
+			id = r.URL.Query().Get("id")
+		}
+		if id == "" {
+			jsonError(w, "Thiếu ID phong cách cần xóa", http.StatusBadRequest)
+			return
+		}
+		if err := defaultArtQRService.DeletePreset(id); err != nil {
+			jsonError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"message": "Đã xóa phong cách thành công",
+		})
+		return
+	}
+
+	if r.Method == http.MethodPost {
+		var preset model.ArtQRPreset
+		if err := json.NewDecoder(r.Body).Decode(&preset); err != nil {
+			jsonError(w, "Dữ liệu JSON không hợp lệ: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		if strings.TrimSpace(preset.Name) == "" {
+			jsonError(w, "Tên phong cách không được để trống", http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(preset.ID) == "" {
+			preset.ID = strings.ToLower(strings.ReplaceAll(preset.Name, " ", "_"))
+		}
+
+		if err := defaultArtQRService.CreateOrUpdatePreset(preset); err != nil {
+			jsonError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"message": "Đã lưu phong cách thành công",
+			"preset":  preset,
+		})
+		return
+	}
+
+	jsonError(w, "Phương thức không được hỗ trợ", http.StatusMethodNotAllowed)
+}
+
+// AdminUploadSceneHandler handles uploading a reference scene image for Art QR presets
+// POST /api/art-qr/admin/upload-scene
+func AdminUploadSceneHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonError(w, "Phương thức không được hỗ trợ", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if err := r.ParseMultipartForm(15 << 20); err != nil {
+		jsonError(w, "Ảnh tải lên vượt quá dung lượng cho phép (15MB)", http.StatusBadRequest)
+		return
+	}
+
+	file, header, err := r.FormFile("scene_image")
+	if err != nil {
+		jsonError(w, "Trường scene_image là bắt buộc", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(io.LimitReader(file, 15<<20))
+	if err != nil || len(data) == 0 {
+		jsonError(w, "Không thể đọc dữ liệu ảnh", http.StatusBadRequest)
+		return
+	}
+
+	// Determine file extension
+	ext := ".jpg"
+	origName := strings.ToLower(header.Filename)
+	if strings.HasSuffix(origName, ".png") {
+		ext = ".png"
+	} else if strings.HasSuffix(origName, ".webp") {
+		ext = ".webp"
+	}
+
+	fileName := fmt.Sprintf("scene_%d%s", time.Now().UnixNano(), ext)
+
+	// Save to server assets directory
+	_ = os.MkdirAll("assets", 0755)
+	serverPath := filepath.Join("assets", fileName)
+	if err := os.WriteFile(serverPath, data, 0644); err != nil {
+		jsonError(w, "Lỗi lưu ảnh vào server assets: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Also copy to client public/presets directory if accessible
+	clientPresetsDir := filepath.Join("..", "client", "public", "presets")
+	if _, statErr := os.Stat(clientPresetsDir); statErr == nil {
+		_ = os.WriteFile(filepath.Join(clientPresetsDir, fileName), data, 0644)
+	}
+
+	publicURL := "/presets/" + fileName
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"success":  true,
+		"url":      publicURL,
+		"filename": fileName,
+		"size":     len(data),
+	})
+}
+

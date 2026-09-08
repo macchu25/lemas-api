@@ -37,6 +37,9 @@ type ArtQRPreset struct {
 	Name                string     `json:"name" bson:"name"`
 	Description         string     `json:"description" bson:"description"`
 	PreviewURL          string     `json:"preview_url" bson:"preview_url"`
+	ReferenceImageURL   string     `json:"reference_image_url,omitempty" bson:"reference_image_url,omitempty"`
+	PriceCredits        int64      `json:"price_credits" bson:"price_credits"`
+	PriceVND            float64    `json:"price_vnd" bson:"price_vnd"`
 	Material            string     `json:"material" bson:"material"`
 	DarkColor           string     `json:"dark_color" bson:"dark_color"`
 	TextureStrength     float64    `json:"texture_strength" bson:"texture_strength"`

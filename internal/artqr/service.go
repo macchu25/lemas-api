@@ -29,16 +29,20 @@ import (
 	"xkiro-backend/internal/qrtrans"
 )
 
-const jobsPersistenceFile = "artqr_jobs.json"
+const (
+	jobsPersistenceFile    = "artqr_jobs.json"
+	presetsPersistenceFile = "artqr_presets.json"
+)
 
 type Service struct {
-	mu        sync.RWMutex
-	jobs      map[string]*model.ArtQRJob
-	presets   map[string]model.ArtQRPreset
-	analyzer  vision.StyleAnalyzer
-	provider  provider.ArtQRProvider
-	machgen   *provider.MachGenProvider
-	workerSem chan struct{}
+	mu           sync.RWMutex
+	jobs         map[string]*model.ArtQRJob
+	presets      map[string]model.ArtQRPreset
+	presetsOrder []string
+	analyzer     vision.StyleAnalyzer
+	provider     provider.ArtQRProvider
+	machgen      *provider.MachGenProvider
+	workerSem    chan struct{}
 }
 
 func (s *Service) saveJobs() {
@@ -74,34 +78,102 @@ func (s *Service) loadJobs() {
 	log.Printf("[ArtQR] Restored %d jobs from %s", len(s.jobs), jobsPersistenceFile)
 }
 
+func (s *Service) savePresets() {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	list := make([]model.ArtQRPreset, 0)
+	seen := make(map[string]bool)
+	for _, id := range s.presetsOrder {
+		if p, ok := s.presets[id]; ok && !seen[p.ID] {
+			list = append(list, p)
+			seen[p.ID] = true
+		}
+	}
+	for id, p := range s.presets {
+		if !seen[p.ID] && p.ID == id {
+			list = append(list, p)
+			seen[p.ID] = true
+		}
+	}
+
+	data, err := json.MarshalIndent(list, "", "  ")
+	if err == nil {
+		_ = os.WriteFile(presetsPersistenceFile, data, 0644)
+	}
+}
+
+func (s *Service) loadPresets() {
+	data, err := os.ReadFile(presetsPersistenceFile)
+	if err != nil {
+		return
+	}
+	var loaded []model.ArtQRPreset
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, pr := range loaded {
+		s.presets[pr.ID] = pr
+		if pr.Slug != "" {
+			s.presets[pr.Slug] = pr
+		}
+		s.presetsOrder = append(s.presetsOrder, pr.ID)
+	}
+	log.Printf("[ArtQR] Restored %d presets from %s", len(loaded), presetsPersistenceFile)
+}
+
 func NewService() *Service {
 	mg := provider.NewMachGenProvider()
 	v := vision.NewXKiroVisionAnalyzer()
 
 	presetMap := make(map[string]model.ArtQRPreset)
+	order := make([]string, 0, len(prompt.DefaultPresets))
 	for _, pr := range prompt.DefaultPresets {
 		presetMap[pr.ID] = pr
 		presetMap[pr.Slug] = pr
+		order = append(order, pr.ID)
 	}
 
 	svc := &Service{
-		jobs:      make(map[string]*model.ArtQRJob),
-		presets:   presetMap,
-		analyzer:  v,
-		provider:  mg,
-		machgen:   mg,
-		workerSem: make(chan struct{}, 4),
+		jobs:         make(map[string]*model.ArtQRJob),
+		presets:      presetMap,
+		presetsOrder: order,
+		analyzer:     v,
+		provider:     mg,
+		machgen:      mg,
+		workerSem:    make(chan struct{}, 4),
 	}
 	svc.loadJobs()
+	svc.loadPresets()
 	return svc
 }
 
 func (s *Service) ListPresets() []model.ArtQRPreset {
-	return prompt.DefaultPresets
+	return s.GetPresets()
 }
 
 func (s *Service) GetPresets() []model.ArtQRPreset {
-	return prompt.DefaultPresets
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	result := make([]model.ArtQRPreset, 0)
+	seen := make(map[string]bool)
+
+	for _, id := range s.presetsOrder {
+		if p, ok := s.presets[id]; ok && !seen[p.ID] {
+			result = append(result, p)
+			seen[p.ID] = true
+		}
+	}
+	for id, p := range s.presets {
+		if !seen[p.ID] && p.ID == id {
+			result = append(result, p)
+			seen[p.ID] = true
+		}
+	}
+	return result
 }
 
 func (s *Service) GetPreset(idOrSlug string) (*model.ArtQRPreset, bool) {
@@ -112,6 +184,59 @@ func (s *Service) GetPreset(idOrSlug string) (*model.ArtQRPreset, bool) {
 		return nil, false
 	}
 	return &p, true
+}
+
+func (s *Service) CreateOrUpdatePreset(p model.ArtQRPreset) error {
+	s.mu.Lock()
+	p.ID = strings.TrimSpace(p.ID)
+	if p.ID == "" {
+		p.ID = "preset_" + uuid.New().String()[:8]
+	}
+	if p.Slug == "" {
+		p.Slug = p.ID
+	}
+	now := time.Now()
+	if p.CreatedAt.IsZero() {
+		p.CreatedAt = now
+	}
+	p.UpdatedAt = now
+
+	// Check if already in order
+	alreadyInOrder := false
+	for _, id := range s.presetsOrder {
+		if id == p.ID {
+			alreadyInOrder = true
+			break
+		}
+	}
+	if !alreadyInOrder {
+		s.presetsOrder = append(s.presetsOrder, p.ID)
+	}
+
+	s.presets[p.ID] = p
+	s.presets[p.Slug] = p
+	s.mu.Unlock()
+
+	s.savePresets()
+	log.Printf("[ArtQR] Preset saved: ID=%s, Name=%q, Price=%d credits", p.ID, p.Name, p.PriceCredits)
+	return nil
+}
+
+func (s *Service) DeletePreset(id string) error {
+	s.mu.Lock()
+	delete(s.presets, id)
+	newOrder := make([]string, 0, len(s.presetsOrder))
+	for _, pid := range s.presetsOrder {
+		if pid != id {
+			newOrder = append(newOrder, pid)
+		}
+	}
+	s.presetsOrder = newOrder
+	s.mu.Unlock()
+
+	s.savePresets()
+	log.Printf("[ArtQR] Preset deleted: ID=%s", id)
+	return nil
 }
 
 func (s *Service) GetJob(jobID string) (*model.ArtQRJob, bool) {
