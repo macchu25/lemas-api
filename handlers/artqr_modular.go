@@ -42,8 +42,8 @@ func GenerateArtQRHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jsonError(w, "Chức năng Art QR hiện đang tạm khóa để bảo trì và nâng cấp lên mô hình thế hệ mới.", http.StatusServiceUnavailable)
-	return
+	// Check if synchronous execution is requested
+	isSync := r.URL.Query().Get("sync") == "true" || r.FormValue("sync") == "true"
 
 	// 1. Extract QR image (Required)
 	qrFile, _, err := r.FormFile("qr_image")
@@ -68,6 +68,9 @@ func GenerateArtQRHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 3. Extract Preset ID & Custom Prompt (Optional)
 	presetID := strings.TrimSpace(r.FormValue("preset_id"))
+	if presetID == "" {
+		presetID = "bread_toast"
+	}
 	customPrompt := strings.TrimSpace(r.FormValue("custom_prompt"))
 
 	// 4. Extract & Validate Placement
@@ -114,15 +117,39 @@ func GenerateArtQRHandler(w http.ResponseWriter, r *http.Request) {
 	// Get User ID from context if available
 	userID, _ := r.Context().Value(UserContextKey).(string)
 
-	// Create job
-	job, err := defaultArtQRService.CreateJob(r.Context(), artqr.CreateJobParams{
+	params := artqr.CreateJobParams{
 		UserID:         userID,
 		QRPNGBytes:     qrBytes,
 		ReferenceBytes: refBytes,
 		PresetID:       presetID,
 		CustomPrompt:   customPrompt,
 		Placement:      placement,
-	})
+	}
+
+	// Handle synchronous generation request
+	if isSync {
+		result, err := defaultArtQRService.GenerateArtQR(r.Context(), params)
+		w.Header().Set("Content-Type", "application/json")
+		if err != nil || (result != nil && !result.Success) {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			if result != nil {
+				_ = json.NewEncoder(w).Encode(result)
+			} else {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"success":  false,
+					"qr_valid": false,
+					"error":    err.Error(),
+				})
+			}
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(result)
+		return
+	}
+
+	// Handle async job queueing
+	job, err := defaultArtQRService.CreateJob(r.Context(), params)
 	if err != nil {
 		jsonError(w, err.Error(), http.StatusBadRequest)
 		return
@@ -131,11 +158,16 @@ func GenerateArtQRHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"jobId":    job.ID,
-		"status":   job.Status,
-		"progress": job.Progress,
+		"jobId":              job.ID,
+		"status":             job.Status,
+		"progress":           job.Progress,
+		"expected_payload":   job.OriginalPayload,
+		"preset_id":          job.PresetID,
+		"background_removed": job.BackgroundRemoved,
+		"fallback_mode":      job.FallbackMode,
 	})
 }
+
 
 // AnalyzeStyleHandler handles POST /api/art-qr/analyze-style
 func AnalyzeStyleHandler(w http.ResponseWriter, r *http.Request) {

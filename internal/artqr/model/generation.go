@@ -7,7 +7,9 @@ import (
 
 type OutputImage struct {
 	URL                string  `json:"url" bson:"url"`
+	DataURL            string  `json:"data_url,omitempty" bson:"data_url,omitempty"`
 	Verified           bool    `json:"verified" bson:"verified"`
+	DecodedPayload     string  `json:"decoded_payload,omitempty" bson:"decoded_payload,omitempty"`
 	DecodedPayloadHash string  `json:"decoded_payload_hash,omitempty" bson:"decoded_payload_hash,omitempty"`
 	Seed               int     `json:"seed,omitempty" bson:"seed,omitempty"`
 	ConditioningScale  float64 `json:"conditioning_scale,omitempty" bson:"conditioning_scale,omitempty"`
@@ -21,6 +23,7 @@ type ArtQRJob struct {
 	Progress            int           `json:"progress" bson:"progress"`
 	OriginalPayloadHash string        `json:"original_payload_hash" bson:"original_payload_hash"`
 	OriginalPayload     string        `json:"original_payload,omitempty" bson:"original_payload"`
+	DecodedPayload      string        `json:"decoded_payload,omitempty" bson:"decoded_payload"`
 	PresetID            string        `json:"preset_id,omitempty" bson:"preset_id,omitempty"`
 	Placement           Placement     `json:"placement" bson:"placement"`
 	Prompt              string        `json:"prompt,omitempty" bson:"prompt,omitempty"`
@@ -29,6 +32,9 @@ type ArtQRJob struct {
 	Attempts            int           `json:"attempts" bson:"attempts"`
 	MaxAttempts         int           `json:"max_attempts" bson:"max_attempts"`
 	RejectedCount       int           `json:"rejected_count" bson:"rejected_count"`
+	BackgroundRemoved   bool          `json:"background_removed" bson:"background_removed"`
+	FallbackMode        bool          `json:"fallback_mode" bson:"fallback_mode"`
+	ProcessingMs        int64         `json:"processing_ms" bson:"processing_ms"`
 	Images              []OutputImage `json:"images" bson:"images"`
 	Error               string        `json:"error,omitempty" bson:"error,omitempty"`
 	CreatedAt           time.Time     `json:"created_at" bson:"created_at"`
@@ -36,6 +42,7 @@ type ArtQRJob struct {
 
 	// In-memory binary caches during generation
 	SourceQRPNG        []byte `json:"-" bson:"-"`
+	CleanedQRPNG       []byte `json:"-" bson:"-"`
 	ControlCanvasPNG   []byte `json:"-" bson:"-"`
 	ReferenceImageJPEG []byte `json:"-" bson:"-"`
 }

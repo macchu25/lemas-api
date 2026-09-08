@@ -3,14 +3,15 @@ package artqr
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
+	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
 	"log"
-	"math/rand"
 	"os"
 	"strings"
 	"sync"
@@ -19,12 +20,13 @@ import (
 	_ "golang.org/x/image/webp"
 
 	"github.com/google/uuid"
-	qrcode "github.com/skip2/go-qrcode"
+	"xkiro-backend/internal/artqr/compositor"
 	"xkiro-backend/internal/artqr/model"
 	"xkiro-backend/internal/artqr/prompt"
 	"xkiro-backend/internal/artqr/provider"
 	"xkiro-backend/internal/artqr/qr"
 	"xkiro-backend/internal/artqr/vision"
+	"xkiro-backend/internal/qrtrans"
 )
 
 const jobsPersistenceFile = "artqr_jobs.json"
@@ -35,6 +37,7 @@ type Service struct {
 	presets   map[string]model.ArtQRPreset
 	analyzer  vision.StyleAnalyzer
 	provider  provider.ArtQRProvider
+	machgen   *provider.MachGenProvider
 	workerSem chan struct{}
 }
 
@@ -72,7 +75,7 @@ func (s *Service) loadJobs() {
 }
 
 func NewService() *Service {
-	p := provider.NewHuggingFaceProvider()
+	mg := provider.NewMachGenProvider()
 	v := vision.NewXKiroVisionAnalyzer()
 
 	presetMap := make(map[string]model.ArtQRPreset)
@@ -85,7 +88,8 @@ func NewService() *Service {
 		jobs:      make(map[string]*model.ArtQRJob),
 		presets:   presetMap,
 		analyzer:  v,
-		provider:  p,
+		provider:  mg,
+		machgen:   mg,
 		workerSem: make(chan struct{}, 4),
 	}
 	svc.loadJobs()
@@ -121,86 +125,174 @@ func (s *Service) GetJob(jobID string) (*model.ArtQRJob, bool) {
 }
 
 type CreateJobParams struct {
-	UserID         string
-	QRPNGBytes     []byte
-	ReferenceBytes []byte
-	PresetID       string
-	CustomPrompt   string
-	Placement      model.Placement
+	UserID         string          `json:"user_id,omitempty"`
+	QRPNGBytes     []byte          `json:"-"`
+	ReferenceBytes []byte          `json:"-"`
+	PresetID       string          `json:"preset_id,omitempty"`
+	CustomPrompt   string          `json:"custom_prompt,omitempty"`
+	Placement      model.Placement `json:"placement"`
+}
+
+type ArtQRResult struct {
+	Success           bool   `json:"success"`
+	Image             string `json:"image"`
+	ExpectedPayload   string `json:"expected_payload"`
+	DecodedPayload    string `json:"decoded_payload"`
+	QRValid           bool   `json:"qr_valid"`
+	Preset            string `json:"preset"`
+	BackgroundRemoved bool   `json:"background_removed"`
+	FallbackMode      bool   `json:"fallback_mode"`
+	RetryCount        int    `json:"retry_count"`
+	ProcessingMs      int64  `json:"processing_ms"`
+	Error             string `json:"error,omitempty"`
 }
 
 func (s *Service) AnalyzeStyle(ctx context.Context, refImgBytes []byte, placement model.Placement) (*vision.StyleAnalysisResult, error) {
 	return s.analyzer.AnalyzeStyle(ctx, refImgBytes, placement)
 }
 
+// loadDefaultSceneImage loads prepackaged preset scene (e.g. Doraemon bread) if no reference was uploaded
+func loadDefaultSceneImage(presetID string) []byte {
+	if presetID == "bread_toast" || presetID == "" {
+		candidates := []string{
+			"assets/doraemon_bread_scene.jpg",
+			"../server/assets/doraemon_bread_scene.jpg",
+			"client/public/presets/doraemon_bread_scene.jpg",
+			"../client/public/presets/doraemon_bread_scene.jpg",
+		}
+		for _, path := range candidates {
+			if data, err := os.ReadFile(path); err == nil && len(data) > 0 {
+				return data
+			}
+		}
+	}
+	return nil
+}
+
+// CreateJob validates original QR, runs existing QR background-removal immediately, and queues job
 func (s *Service) CreateJob(ctx context.Context, params CreateJobParams) (*model.ArtQRJob, error) {
+	jobID := "artqr_" + uuid.New().String()
+	startTime := time.Now()
+
+	log.Printf("[ArtQR] [%s] Pipeline started: validating raw QR input (%d bytes)", jobID, len(params.QRPNGBytes))
+
 	if len(params.QRPNGBytes) == 0 {
 		return nil, errors.New("qr_image is required")
 	}
 
+	// 1. STEP 2: Decode original QR BEFORE any generative processing. Reject if invalid.
+	decoded, err := qr.DecodeQRCode(params.QRPNGBytes)
+	if err != nil || decoded == nil || decoded.Payload == "" {
+		log.Printf("[ArtQR] [%s] QR validation rejected: unable to decode original QR input (%v)", jobID, err)
+		return nil, fmt.Errorf("không thể đọc được mã QR gốc; vui lòng tải ảnh QR rõ nét hơn: %v", err)
+	}
+	expectedPayload := decoded.Payload
+	log.Printf("[ArtQR] [%s] Original QR successfully decoded. Expected payload: %q (hash=%s)",
+		jobID, expectedPayload, decoded.PayloadHash)
+
+	// 2. MANDATORY FIRST STEP: Run existing QR background removal immediately
+	log.Printf("[ArtQR] [%s] MANDATORY STEP: Running existing QR background-removal (qrtrans.ProcessImage)...", jobID)
+
+	rawImg, _, err := image.Decode(bytes.NewReader(params.QRPNGBytes))
+	if err != nil {
+		log.Printf("[ArtQR] [%s] Failed to decode raw QR image into image.Image: %v", jobID, err)
+		return nil, fmt.Errorf("không thể đọc định dạng ảnh QR: %w", err)
+	}
+
+	var cleanedQRPNG []byte
+	backgroundRemoved := false
+	fallbackMode := false
+
+	// Call existing QR background-removal function
+	bgOpts := &qrtrans.Options{
+		Threshold:                    0, // Automatic Otsu thresholding
+		ValidateQR:                   true,
+		FallbackOnValidationFailure: true,
+		CropMode:                     qrtrans.CropModeNone,
+	}
+	bgResult, bgErr := qrtrans.ProcessImage(rawImg, bgOpts)
+
+	if bgErr != nil || bgResult == nil || len(bgResult.PNGData) == 0 {
+		log.Printf("[ArtQR] [%s] Existing QR background-removal error: %v. Attempting safe fallback with original QR...", jobID, bgErr)
+		// Safe fallback: only if original QR can still be decoded
+		fallbackTest := qr.ValidateGeneratedQR(params.QRPNGBytes, expectedPayload)
+		if fallbackTest.Valid {
+			cleanedQRPNG = params.QRPNGBytes
+			fallbackMode = true
+			log.Printf("[ArtQR] [%s] Safe fallback mode engaged using verified original QR image", jobID)
+		} else {
+			log.Printf("[ArtQR] [%s] Failed safe fallback: original QR damaged or unrecoverable", jobID)
+			return nil, fmt.Errorf("không thể bóc tách nền hoặc khôi phục mã QR an toàn: %v", bgErr)
+		}
+	} else {
+		cleanedQRPNG = bgResult.PNGData
+		backgroundRemoved = true
+		log.Printf("[ArtQR] [%s] Existing QR background-removal SUCCEEDED in %v (threshold=%d, valid=%v, retries=%d)",
+			jobID, bgResult.Duration, bgResult.ThresholdUsed, bgResult.QRValid, bgResult.Retries)
+	}
+
+	// 3. Resolve preset & placement
+	if params.PresetID == "" {
+		params.PresetID = "bread_toast"
+	}
+	preset, hasPreset := s.GetPreset(params.PresetID)
+	if !hasPreset || preset == nil {
+		preset = &prompt.DefaultPresets[0]
+		params.PresetID = preset.ID
+	}
+
 	if !params.Placement.IsValid() {
-		if params.PresetID != "" {
-			if p, ok := s.GetPreset(params.PresetID); ok && p != nil && p.Placement != nil && p.Placement.IsValid() {
-				params.Placement = *p.Placement
-			} else {
-				params.Placement = model.DefaultPlacement()
-			}
+		if preset.Placement != nil && preset.Placement.IsValid() {
+			params.Placement = *preset.Placement
 		} else {
 			params.Placement = model.DefaultPlacement()
 		}
 	}
 
-	// Smart Portrait Face Protection: If reference photo is vertical/portrait (height > width)
-	// and placement is at the upper half/face/neck (Y < 0.58),
-	// automatically reposition placement to chest/uniform fabric (x: 0.23, y: 0.61, size: 0.38) to keep face 100% pristine
-	if len(params.ReferenceBytes) > 0 && params.Placement.Y < 0.58 {
-		if cfg, _, err := image.DecodeConfig(bytes.NewReader(params.ReferenceBytes)); err == nil {
-			if cfg.Height > int(float64(cfg.Width)*1.05) {
-				params.Placement = model.Placement{X: 0.23, Y: 0.61, Size: 0.38}
-				log.Printf("[ArtQR] Smart Portrait Guard: Automatically protected subject face by moving QR placement to chest (0.23, 0.61, 0.38)")
-			}
+	// 4. Base scene reference image (Reference 1)
+	baseScene := params.ReferenceBytes
+	if len(baseScene) == 0 {
+		baseScene = loadDefaultSceneImage(params.PresetID)
+		if len(baseScene) > 0 {
+			log.Printf("[ArtQR] [%s] Loaded default preset scene reference (%d bytes)", jobID, len(baseScene))
 		}
 	}
 
-	// 1. Decode original QR
-	decoded, err := qr.DecodeQRCode(params.QRPNGBytes)
-	if err != nil {
-		return nil, fmt.Errorf("không thể giải mã QR: %w", err)
+	// 5. Build authoritative binary QR mask & control canvas
+	quietZone := preset.QuietZoneModules
+	if quietZone <= 0 {
+		quietZone = 4
 	}
-
-	// 2. Generate clean QR code (Level H) with standard quiet zone border
-	sourceQRPNG := decoded.PNGBytes
-	if cleanQR, qErr := qrcode.New(decoded.Payload, qrcode.Highest); qErr == nil {
-		cleanQR.DisableBorder = false
-		if cleanBytes, err := cleanQR.PNG(512); err == nil && len(cleanBytes) > 0 {
-			sourceQRPNG = cleanBytes
-		}
+	binaryMask, maskErr := qr.BuildBinaryQRMask(cleanedQRPNG, 1024, 1024, params.Placement, quietZone)
+	if maskErr != nil {
+		log.Printf("[ArtQR] [%s] Failed to build authoritative binary QR mask: %v", jobID, maskErr)
+		return nil, fmt.Errorf("không thể khởi tạo mặt nạ module QR: %w", maskErr)
 	}
+	log.Printf("[ArtQR] [%s] Authoritative binary QR mask built: dimension=%dx%d modules, quiet_zone=%d",
+		jobID, binaryMask.ModuleDim, binaryMask.ModuleDim, binaryMask.QuietZoneModules)
 
-	// 3. Build 1024x1024 placement control canvas
-	controlCanvas, err := qr.BuildControlCanvas(sourceQRPNG, params.Placement, 1024)
-	if err != nil {
-		return nil, fmt.Errorf("không thể khởi tạo vùng định vị QR: %w", err)
-	}
+	controlCanvas, _ := qr.BuildControlCanvas(cleanedQRPNG, params.Placement, 1024)
 
-	jobID := "artqr_" + uuid.New().String()
 	now := time.Now()
-
 	job := &model.ArtQRJob{
 		ID:                  jobID,
 		UserID:              params.UserID,
 		Status:              "queued",
-		Progress:            5,
-		OriginalPayload:     decoded.Payload,
+		Progress:            10,
+		OriginalPayload:     expectedPayload,
 		OriginalPayloadHash: decoded.PayloadHash,
 		PresetID:            params.PresetID,
 		Prompt:              params.CustomPrompt,
 		Placement:           params.Placement,
-		MaxAttempts:         4,
+		MaxAttempts:         7,
 		Attempts:            0,
+		BackgroundRemoved:   backgroundRemoved,
+		FallbackMode:        fallbackMode,
+		ProcessingMs:        time.Since(startTime).Milliseconds(),
+		SourceQRPNG:         params.QRPNGBytes,
+		CleanedQRPNG:        cleanedQRPNG,
 		ControlCanvasPNG:    controlCanvas,
-		SourceQRPNG:         sourceQRPNG,
-		ReferenceImageJPEG:  params.ReferenceBytes,
+		ReferenceImageJPEG:  baseScene,
 		Images:              make([]model.OutputImage, 0),
 		CreatedAt:           now,
 		UpdatedAt:           now,
@@ -211,166 +303,236 @@ func (s *Service) CreateJob(ctx context.Context, params CreateJobParams) (*model
 	s.mu.Unlock()
 	s.saveJobs()
 
-	// Launch async execution
-	go s.processJob(job)
+	// Launch async execution worker
+	go s.processJob(job, binaryMask, *preset)
 
 	return job, nil
 }
 
-func (s *Service) processJob(job *model.ArtQRJob) {
+// GenerateArtQR executes the entire pipeline synchronously and returns the structured result contract
+func (s *Service) GenerateArtQR(ctx context.Context, params CreateJobParams) (*ArtQRResult, error) {
+	job, err := s.CreateJob(ctx, params)
+	if err != nil {
+		return &ArtQRResult{
+			Success:           false,
+			ExpectedPayload:   "",
+			QRValid:           false,
+			BackgroundRemoved: false,
+			Error:             err.Error(),
+		}, err
+	}
+
+	// Poll job until completion or failure (up to 2 minutes)
+	ticker := time.NewTicker(400 * time.Millisecond)
+	defer ticker.Stop()
+
+	timeout := time.After(2 * time.Minute)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timeout:
+			return &ArtQRResult{
+				Success:         false,
+				ExpectedPayload: job.OriginalPayload,
+				Error:           "thời gian xử lý vượt quá giới hạn",
+			}, errors.New("timeout waiting for Art QR generation")
+		case <-ticker.C:
+			current, ok := s.GetJob(job.ID)
+			if !ok {
+				return nil, errors.New("tác vụ bị gián đoạn")
+			}
+			if current.Status == "completed" {
+				var finalImageURL string
+				var finalDecoded string
+				if len(current.Images) > 0 {
+					finalImageURL = current.Images[0].DataURL
+					if finalImageURL == "" {
+						finalImageURL = current.Images[0].URL
+					}
+					finalDecoded = current.Images[0].DecodedPayload
+				}
+				if finalDecoded == "" {
+					finalDecoded = current.OriginalPayload
+				}
+
+				return &ArtQRResult{
+					Success:           true,
+					Image:             finalImageURL,
+					ExpectedPayload:   current.OriginalPayload,
+					DecodedPayload:    finalDecoded,
+					QRValid:           true,
+					Preset:            current.PresetID,
+					BackgroundRemoved: current.BackgroundRemoved,
+					FallbackMode:      current.FallbackMode,
+					RetryCount:        current.Attempts - 1,
+					ProcessingMs:      current.ProcessingMs,
+				}, nil
+			}
+			if current.Status == "failed" {
+				return &ArtQRResult{
+					Success:           false,
+					ExpectedPayload:   current.OriginalPayload,
+					QRValid:           false,
+					BackgroundRemoved: current.BackgroundRemoved,
+					FallbackMode:      current.FallbackMode,
+					RetryCount:        current.Attempts,
+					ProcessingMs:      current.ProcessingMs,
+					Error:             current.Error,
+				}, fmt.Errorf("job failed: %s", current.Error)
+			}
+		}
+	}
+}
+
+func (s *Service) processJob(job *model.ArtQRJob, binaryMask *qr.BinaryQRMask, preset model.ArtQRPreset) {
 	s.workerSem <- struct{}{}
 	defer func() { <-s.workerSem }()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	job.UpdateStatus("processing", 15)
+	job.UpdateStatus("processing", 20)
 
-	// Step A: Style Analysis (if reference image is provided)
-	var analysis *vision.StyleAnalysisResult
-	var preset *model.ArtQRPreset
-
-	if len(job.ReferenceImageJPEG) > 0 {
-		job.UpdateStatus("analyzing_style", 20)
-		var err error
-		analysis, err = s.analyzer.AnalyzeStyle(ctx, job.ReferenceImageJPEG, job.Placement)
-		if err != nil || analysis == nil {
-			log.Printf("[Vision Notice] Vision API unavailable (%v), using smart local visual prompt fallback", err)
-			analysis = &vision.StyleAnalysisResult{
-				Style:           "Chân dung nghệ thuật / Tác phẩm gốc",
-				Palette:         []string{"#8b0000", "#ffd700", "#1a202c", "#f5d0a9"},
-				Lighting:        "Ánh sáng studio cinematic",
-				Texture:         "Vân vải & chi tiết tự nhiên",
-				GeneratedPrompt: "Masterpiece high quality artwork preserving the exact subject, clothing, textures, and background with ornate golden bullion embroidery cords and brass medals",
-			}
-		}
-	} else if job.PresetID != "" {
-		if p, ok := s.GetPreset(job.PresetID); ok {
-			preset = p
-		}
-	}
-
-	if preset == nil && analysis == nil {
-		preset = &prompt.DefaultPresets[0]
-	}
-
-	// Step B: Build placement-aware prompt
-	finalPrompt, negativePrompt := prompt.BuildPrompt(preset, analysis, job.Placement)
+	// Step A: Determine Prompt
+	finalPrompt := preset.Prompt
 	if strings.TrimSpace(job.Prompt) != "" {
 		finalPrompt = strings.TrimSpace(job.Prompt)
 	}
 	job.Prompt = finalPrompt
-	job.NegativePrompt = negativePrompt
+	job.NegativePrompt = preset.NegativePrompt
 
-	// Step C: Adaptive conditioning search starting at optimal scannable scale
-	conditioningScales := []float64{1.70, 1.64, 1.76}
-	if len(job.ReferenceImageJPEG) == 0 && preset != nil && preset.ConditioningScale > 0 {
-		baseScale := preset.ConditioningScale
-		conditioningScales = []float64{baseScale, baseScale + 0.03, baseScale - 0.03}
+	log.Printf("[ArtQR] [%s] Starting MachGen synthesis: preset=%s, placement=(%.2f, %.2f, %.2f)",
+		job.ID, preset.ID, job.Placement.X, job.Placement.Y, job.Placement.Size)
+
+	job.UpdateStatus("generating", 35)
+
+	// Step B: MachGen Two-Reference Synthesis
+	// Ref 1: Base scene image (ReferenceImageJPEG)
+	// Ref 2: Cleaned transparent QR from background removal (CleanedQRPNG)
+	machgenResultBytes, err := s.machgen.GenerateWithTwoReferences(
+		ctx,
+		job.ReferenceImageJPEG,
+		job.CleanedQRPNG,
+		finalPrompt,
+		s.machgen.Name(),
+		1024,
+		1024,
+	)
+	if err != nil {
+		log.Printf("[ArtQR] [%s] MachGen dual-reference request failed (%v), proceeding to deterministic restoration with baseline scene", job.ID, err)
+		// We still DO NOT fail immediately: the deterministic engine can blend the preset material directly onto the scene!
+		machgenResultBytes = nil
+	} else {
+		log.Printf("[ArtQR] [%s] MachGen aesthetic generation received (%d bytes)", job.ID, len(machgenResultBytes))
 	}
-	job.MaxAttempts = len(conditioningScales)
-	targetOutputs := 1
 
-	log.Printf("[ArtQR] [%s] Starting job execution: max_attempts=%d, placement=(%.2f, %.2f, %.2f)",
-		job.ID, job.MaxAttempts, job.Placement.X, job.Placement.Y, job.Placement.Size)
+	job.UpdateStatus("validating", 65)
+
+	// Step C: Progressive Safety Retry Pipeline (Attempts 1 to 7)
+	safety := compositor.DefaultSafetyConfig(preset)
+	var finalCompositedPNG []byte
+	var decodedText string
+	verified := false
 
 	for attempt := 1; attempt <= job.MaxAttempts; attempt++ {
 		job.IncrementAttempt()
-		needed := targetOutputs - len(job.Images)
-		if needed <= 0 {
-			break
+
+		// Progressive safety adjustments per Step 15
+		switch attempt {
+		case 1:
+			// Baseline preset settings
+			log.Printf("[ArtQR] [%s] Restoration Attempt %d/7: baseline preset settings (texture=%.2f, contrast=%.2f, max_lum=%d)",
+				job.ID, attempt, safety.TextureStrength, safety.ContrastMultiplier, safety.MaxDarkLuminance)
+		case 2:
+			// Attempt 2: Reduce texture strength
+			safety.TextureStrength = preset.TextureStrength * 0.65
+			log.Printf("[ArtQR] [%s] Restoration Attempt %d/7: reduced texture strength (texture=%.2f)",
+				job.ID, attempt, safety.TextureStrength)
+		case 3:
+			// Attempt 3: Increase dark/light contrast
+			safety.ContrastMultiplier = preset.ContrastStrength * 1.20
+			safety.MaxDarkLuminance = 85
+			log.Printf("[ArtQR] [%s] Restoration Attempt %d/7: increased contrast, clamped luminance to %d",
+				job.ID, attempt, safety.MaxDarkLuminance)
+		case 4:
+			// Attempt 4: Make dark modules more uniformly dark toasted brown
+			safety.TextureStrength = 0.06
+			safety.MaxDarkLuminance = 70
+			log.Printf("[ArtQR] [%s] Restoration Attempt %d/7: uniform dark toasted brown modules", job.ID, attempt)
+		case 5:
+			// Attempt 5: Reduce visual noise & clamp brighter pixels
+			safety.TextureStrength = 0.03
+			safety.MaxDarkLuminance = 55
+			log.Printf("[ArtQR] [%s] Restoration Attempt %d/7: minimal visual noise, aggressive dark clamping", job.ID, attempt)
+		case 6:
+			// Attempt 6: Simplify finder-pattern material (100% solid contrast)
+			safety.SolidifyFinderPattern = true
+			safety.MaxDarkLuminance = 45
+			log.Printf("[ArtQR] [%s] Restoration Attempt %d/7: solidified finder patterns", job.ID, attempt)
+		case 7:
+			// Attempt 7: Increase / clean quiet zone completely
+			safety.CleanQuietZone = true
+			safety.TextureStrength = 0.01
+			safety.MaxDarkLuminance = 35
+			log.Printf("[ArtQR] [%s] Restoration Attempt %d/7: enforced 100%% clean quiet zone", job.ID, attempt)
 		}
 
-		currentProgress := 25 + int(float64(attempt)/float64(job.MaxAttempts)*65)
-		if currentProgress > 90 {
-			currentProgress = 90
-		}
-		job.UpdateStatus("generating", currentProgress)
-
-		scaleIdx := attempt - 1
-		if scaleIdx >= len(conditioningScales) {
-			scaleIdx = len(conditioningScales) - 1
-		}
-		currentScale := conditioningScales[scaleIdx]
-		seed := 42
-		if attempt > 1 {
-			seed = int(time.Now().UnixNano()&0x7fffffff) + rand.Intn(10000)
-		}
-
-		log.Printf("[ArtQR] [%s] Attempt %d/%d: conditioning_scale=%.2f, seed=%d",
-			job.ID, attempt, job.MaxAttempts, currentScale, seed)
-
-		qrControlBytes := job.SourceQRPNG
-		if len(qrControlBytes) == 0 {
-			qrControlBytes = job.ControlCanvasPNG
-		}
-
-		req := &provider.GenerationRequest{
-			Payload:             job.OriginalPayload,
-			Prompt:              finalPrompt,
-			NegativePrompt:      negativePrompt,
-			QRControlImagePNG:   qrControlBytes,
-			ReferenceImageBytes: job.ReferenceImageJPEG,
-			Placement:           job.Placement,
-			ConditioningScale:   currentScale,
-			ReferenceStrength:   0.74,
-			GuidanceScale:       7.5,
-			Seed:                seed,
-			Width:               1024,
-			Height:              1024,
-			NumOutputs:          4,
-		}
-
-		// Raw AI diffusion execution
-		candidates, err := s.provider.Generate(ctx, req)
-		if err != nil {
-			log.Printf("[ArtQR] [%s] Attempt %d AI provider error: %v", job.ID, attempt, err)
-			if attempt == job.MaxAttempts && len(job.Images) == 0 {
-				job.SetError("Không thể tạo ảnh từ AI Provider: " + err.Error())
-				return
-			}
+		// Execute Deterministic QR Restoration
+		compBytes, compErr := compositor.RestoreAndComposite(
+			job.ReferenceImageJPEG,
+			machgenResultBytes,
+			binaryMask,
+			preset,
+			safety,
+		)
+		if compErr != nil {
+			log.Printf("[ArtQR] [%s] Attempt %d compositor error: %v", job.ID, attempt, compErr)
 			continue
 		}
 
-		job.UpdateStatus("validating", currentProgress+3)
+		finalCompositedPNG = compBytes
 
-		// Step D: Validate candidate
-		for _, cand := range candidates {
-			vResult := qr.ValidateGeneratedQRWithPlacement(cand.PNGBytes, job.OriginalPayload, job.Placement)
-			matchesHash := (vResult.PayloadHash != "" && vResult.PayloadHash == job.OriginalPayloadHash)
-			isVerified := vResult.Valid || matchesHash
+		// Step D: QR Validation (Check decoded_payload == expected_payload)
+		vResult := qr.ValidateGeneratedQRWithPlacement(compBytes, job.OriginalPayload, job.Placement)
+		matchesPayload := (vResult.Valid && vResult.DecodedPayload == job.OriginalPayload)
 
-			log.Printf("[ArtQR] [%s] Attempt %d validation result: valid=%v, payloadMatch=%v (decoded=%q)",
-				job.ID, attempt, isVerified, matchesHash, vResult.DecodedPayload)
+		log.Printf("[ArtQR] [%s] Attempt %d validation: valid=%v, payloadMatch=%v (decoded=%q, expected=%q)",
+			job.ID, attempt, vResult.Valid, matchesPayload, vResult.DecodedPayload, job.OriginalPayload)
 
-			if isVerified {
-				job.AddOutput(model.OutputImage{
-					URL:                cand.URL,
-					Verified:           true,
-					DecodedPayloadHash: vResult.PayloadHash,
-					Seed:               cand.Seed,
-					ConditioningScale:  currentScale,
-				})
-			} else {
-				job.IncrementRejected()
-			}
-
-			if len(job.Images) >= targetOutputs {
-				break
-			}
-		}
-
-		if len(job.Images) >= targetOutputs {
+		if matchesPayload {
+			verified = true
+			decodedText = vResult.DecodedPayload
 			break
 		}
 	}
 
-	if len(job.Images) > 0 {
+	job.ProcessingMs = time.Since(start).Milliseconds()
+
+	// Step E: Final Output Contract
+	if verified && len(finalCompositedPNG) > 0 {
+		b64Data := "data:image/png;base64," + base64.StdEncoding.EncodeToString(finalCompositedPNG)
+		job.DecodedPayload = decodedText
+
+		job.AddOutput(model.OutputImage{
+			URL:                b64Data,
+			DataURL:            b64Data,
+			Verified:           true,
+			DecodedPayload:     decodedText,
+			DecodedPayloadHash: qr.HashPayload(decodedText),
+			ConditioningScale:  preset.ConditioningScale,
+		})
+
 		job.UpdateStatus("completed", 100)
-		log.Printf("[ArtQR] [%s] Job COMPLETED successfully with %d images", job.ID, len(job.Images))
+		log.Printf("[ArtQR] [%s] Job SUCCEEDED in %dms (attempts=%d, payloadMatch=true)",
+			job.ID, job.ProcessingMs, job.Attempts)
 	} else {
-		job.SetError("Không thể tạo Art QR sau các lần thử. Hãy thử lại hoặc chọn phong cách khác.")
-		log.Printf("[ArtQR] [%s] Job FAILED: %s", job.ID, job.Error)
+		job.SetError("Unable to generate a scanner-valid Art QR within retry budget")
+		log.Printf("[ArtQR] [%s] Job FAILED: Unable to generate scanner-valid QR after %d retries",
+			job.ID, job.Attempts)
 	}
+
 	s.saveJobs()
 }

@@ -33,3 +33,6 @@ __pycache__/
 *.json
 test_*.py
 scratch/
+!assets/
+!assets/*
+

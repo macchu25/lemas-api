@@ -32,20 +32,28 @@ func DefaultPlacement() Placement {
 }
 
 type ArtQRPreset struct {
-	ID                string    `json:"id" bson:"_id"`
-	Slug              string    `json:"slug" bson:"slug"`
-	Name              string    `json:"name" bson:"name"`
-	Description       string    `json:"description" bson:"description"`
-	PreviewURL        string    `json:"preview_url" bson:"preview_url"`
-	Colors            []string  `json:"colors" bson:"colors"`
-	Prompt            string    `json:"prompt" bson:"prompt"`
-	NegativePrompt    string    `json:"negative_prompt" bson:"negative_prompt"`
-	ConditioningScale float64   `json:"conditioning_scale" bson:"conditioning_scale"`
-	GuidanceScale     float64   `json:"guidance_scale" bson:"guidance_scale"`
-	Width             int       `json:"width" bson:"width"`
-	Height            int        `json:"height" bson:"height"`
-	Enabled           bool       `json:"enabled" bson:"enabled"`
-	Placement         *Placement `json:"placement,omitempty" bson:"placement,omitempty"`
-	CreatedAt         time.Time  `json:"created_at" bson:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at" bson:"updated_at"`
+	ID                  string     `json:"id" bson:"_id"`
+	Slug                string     `json:"slug" bson:"slug"`
+	Name                string     `json:"name" bson:"name"`
+	Description         string     `json:"description" bson:"description"`
+	PreviewURL          string     `json:"preview_url" bson:"preview_url"`
+	Material            string     `json:"material" bson:"material"`
+	DarkColor           string     `json:"dark_color" bson:"dark_color"`
+	TextureStrength     float64    `json:"texture_strength" bson:"texture_strength"`
+	ContrastStrength    float64    `json:"contrast_strength" bson:"contrast_strength"`
+	QuietZoneModules    int        `json:"quiet_zone_modules" bson:"quiet_zone_modules"`
+	EdgeSoftness        float64    `json:"edge_softness" bson:"edge_softness"`
+	AllowGeometryChange bool       `json:"allow_geometry_change" bson:"allow_geometry_change"`
+	Colors              []string   `json:"colors" bson:"colors"`
+	Prompt              string     `json:"prompt" bson:"prompt"`
+	NegativePrompt      string     `json:"negative_prompt" bson:"negative_prompt"`
+	ConditioningScale   float64    `json:"conditioning_scale" bson:"conditioning_scale"`
+	GuidanceScale       float64    `json:"guidance_scale" bson:"guidance_scale"`
+	Width               int        `json:"width" bson:"width"`
+	Height              int        `json:"height" bson:"height"`
+	Enabled             bool       `json:"enabled" bson:"enabled"`
+	Placement           *Placement `json:"placement,omitempty" bson:"placement,omitempty"`
+	CreatedAt           time.Time  `json:"created_at" bson:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at" bson:"updated_at"`
 }
+
