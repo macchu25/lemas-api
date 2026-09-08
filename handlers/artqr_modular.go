@@ -20,6 +20,12 @@ import (
 
 var defaultArtQRService = artqr.NewService()
 
+// InitArtQRService must run after db.InitDB so presets are restored from the
+// persistent store instead of being frozen to package-init defaults in RAM.
+func InitArtQRService() {
+	defaultArtQRService = artqr.NewService()
+}
+
 func jsonError(w http.ResponseWriter, message string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
@@ -180,7 +186,6 @@ func GenerateArtQRHandler(w http.ResponseWriter, r *http.Request) {
 		"fallback_mode":      job.FallbackMode,
 	})
 }
-
 
 // AnalyzeStyleHandler handles POST /api/art-qr/analyze-style
 func AnalyzeStyleHandler(w http.ResponseWriter, r *http.Request) {
@@ -411,7 +416,7 @@ func AdminUploadSceneHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if db.DB != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-		_ = db.DB.SaveArtQRAsset(ctx, &models.ArtQRAsset{
+		saveErr := db.DB.SaveArtQRAsset(ctx, &models.ArtQRAsset{
 			Filename:    fileName,
 			ContentType: contentType,
 			Data:        data,
@@ -419,6 +424,10 @@ func AdminUploadSceneHandler(w http.ResponseWriter, r *http.Request) {
 			CreatedAt:   time.Now(),
 		})
 		cancel()
+		if saveErr != nil {
+			jsonError(w, "Không thể lưu ảnh tham chiếu vào cơ sở dữ liệu: "+saveErr.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	// Also copy to client public/presets directory if accessible
@@ -491,4 +500,3 @@ func PresetAssetHandler(w http.ResponseWriter, r *http.Request) {
 
 	http.NotFound(w, r)
 }
-

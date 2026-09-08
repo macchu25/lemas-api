@@ -269,17 +269,18 @@ func (s *Service) CreateOrUpdatePreset(p model.ArtQRPreset) error {
 
 	s.savePresets()
 
-	// Persist preset directly to MongoDB Atlas
+	// Persist before returning success. This prevents the admin UI from showing
+	// a successful save while MongoDB is still pending (or has failed), which is
+	// especially visible after refresh or when Railway has multiple replicas.
 	if db.DB != nil {
-		go func(toSave model.ArtQRPreset) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := db.DB.SaveArtQRPreset(ctx, &toSave); err != nil {
-				log.Printf("[ArtQR] Warning: Failed to save preset %s to MongoDB: %v", toSave.ID, err)
-			} else {
-				log.Printf("[ArtQR] Preset %s (%q) successfully saved to MongoDB Atlas Cluster", toSave.ID, toSave.Name)
-			}
-		}(p)
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		err := db.DB.SaveArtQRPreset(ctx, &p)
+		cancel()
+		if err != nil {
+			log.Printf("[ArtQR] Failed to save preset %s to persistent storage: %v", p.ID, err)
+			return fmt.Errorf("không thể lưu phong cách vào cơ sở dữ liệu: %w", err)
+		}
+		log.Printf("[ArtQR] Preset %s (%q) successfully saved to persistent storage", p.ID, p.Name)
 	}
 
 	log.Printf("[ArtQR] Preset saved: ID=%s, Name=%q, Price=%d credits", p.ID, p.Name, p.PriceCredits)
@@ -302,15 +303,14 @@ func (s *Service) DeletePreset(id string) error {
 
 	// Delete from MongoDB Atlas
 	if db.DB != nil {
-		go func(delID string) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := db.DB.DeleteArtQRPreset(ctx, delID); err != nil {
-				log.Printf("[ArtQR] Warning: Failed to delete preset %s from MongoDB: %v", delID, err)
-			} else {
-				log.Printf("[ArtQR] Preset %s deleted from MongoDB Atlas Cluster", delID)
-			}
-		}(id)
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		err := db.DB.DeleteArtQRPreset(ctx, id)
+		cancel()
+		if err != nil {
+			log.Printf("[ArtQR] Failed to delete preset %s from persistent storage: %v", id, err)
+			return fmt.Errorf("không thể xóa phong cách khỏi cơ sở dữ liệu: %w", err)
+		}
+		log.Printf("[ArtQR] Preset %s deleted from persistent storage", id)
 	}
 
 	log.Printf("[ArtQR] Preset deleted: ID=%s", id)

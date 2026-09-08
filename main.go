@@ -24,6 +24,8 @@ func main() {
 
 	// Initialize Database (MongoDB + auto-fallback)
 	db.InitDB()
+	// Art QR depends on db.DB and must be initialized only after MongoDB.
+	handlers.InitArtQRService()
 
 	// Initialize Brain Engine & Upstream Key Rotator (Load from DB)
 	services.InitKeyRotator()
