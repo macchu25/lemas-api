@@ -85,25 +85,23 @@ func RestoreAndComposite(
 	targetH := binaryMask.Height
 
 	// 1. Determine canvas foundation:
-	// The reference scene (baseSceneBytes) is the authoritative background scene ("ảnh tham chiếu").
-	// The user selected or uploaded this scene specifically so the QR code can blend into it.
-	// Therefore, baseSceneBytes MUST ALWAYS form the base canvas whenever present!
+	// Priority 1: machgenOutputBytes is the AI generated image from MachGen/gpt-image-2 (with prompt, texture, lighting).
+	// Priority 2: baseSceneBytes is the fallback if MachGen output is absent or failed to decode.
 	var canvas *image.RGBA
 	var machgenImg image.Image
 
-	if len(baseSceneBytes) > 0 {
-		baseImg, _, err := image.Decode(bytes.NewReader(baseSceneBytes))
-		if err == nil && baseImg != nil {
-			canvas = scaleImage(baseImg, targetW, targetH)
+	if len(machgenOutputBytes) > 0 {
+		mImg, _, err := image.Decode(bytes.NewReader(machgenOutputBytes))
+		if err == nil && mImg != nil {
+			canvas = scaleImage(mImg, targetW, targetH)
 			machgenImg = canvas
 		}
 	}
 
-	// If no baseSceneBytes was provided, use machgenOutputBytes as canvas
-	if canvas == nil && len(machgenOutputBytes) > 0 {
-		mImg, _, err := image.Decode(bytes.NewReader(machgenOutputBytes))
-		if err == nil && mImg != nil {
-			canvas = scaleImage(mImg, targetW, targetH)
+	if canvas == nil && len(baseSceneBytes) > 0 {
+		baseImg, _, err := image.Decode(bytes.NewReader(baseSceneBytes))
+		if err == nil && baseImg != nil {
+			canvas = scaleImage(baseImg, targetW, targetH)
 			machgenImg = canvas
 		}
 	}
