@@ -26,10 +26,10 @@ import (
 	qrcode "github.com/skip2/go-qrcode"
 )
 
-// generateShortSlug produces a compact 4-character slug for maximum QR brevity
+// generateShortSlug produces a compact 3-character slug for maximum QR brevity (25 chars total URL -> Version 1 = 21x21 modules!)
 func generateShortSlug() string {
 	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
-	b := make([]byte, 4)
+	b := make([]byte, 3)
 	_, _ = rand.Read(b)
 	for i := range b {
 		b[i] = charset[int(b[i])%len(charset)]
@@ -130,12 +130,20 @@ type IntermediateQRRequest struct {
 type IntermediateQRResponse struct {
 	Success            bool    `json:"success"`
 	ID                 string  `json:"id"`
+	Slug               string  `json:"slug"`
 	ShortURL           string  `json:"short_url"`
+	TargetURL          string  `json:"target_url"`
 	OriginalPayload    string  `json:"original_payload"`
 	IsURL              bool    `json:"is_url"`
+	QRVersion          int     `json:"qr_version"`
+	OriginalDimension  int     `json:"original_dimension"`
+	ReducedDimension   int     `json:"reduced_dimension"`
+	ModuleCount        int     `json:"module_count"`
 	OriginalModules    int     `json:"original_modules"`
 	ReducedModules     int     `json:"reduced_modules"`
 	ReductionPct       float64 `json:"reduction_pct"`
+	ReductionPercent   float64 `json:"reduction_percent"`
+	DataURL            string  `json:"data_url"`
 	TransparentDataURL string  `json:"transparent_data_url"`
 	CleanDataURL       string  `json:"clean_data_url"`
 	Message            string  `json:"message,omitempty"`
@@ -233,6 +241,9 @@ func GenerateIntermediateQR(ctx context.Context, originalPayload string, baseURL
 	originalModules := CalculateQRModuleCount(originalPayload, qrcode.Medium)
 
 	baseURL = strings.TrimRight(baseURL, "/")
+	if strings.Contains(baseURL, "api.lemas.io.vn") {
+		baseURL = "https://lemas.io.vn"
+	}
 
 	// Generate unique slug
 	slug := generateShortSlug()
@@ -296,17 +307,33 @@ func GenerateIntermediateQR(ctx context.Context, originalPayload string, baseURL
 		}
 	}
 
+	transDataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(transPNG)
+	solidDataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(solidPNG)
+
+	qrVersion := (reducedModules - 17) / 4
+	if qrVersion < 1 {
+		qrVersion = 1
+	}
+
 	return &IntermediateQRResponse{
 		Success:            true,
 		ID:                 slug,
+		Slug:               slug,
 		ShortURL:           shortURL,
+		TargetURL:          originalPayload,
 		OriginalPayload:    originalPayload,
 		IsURL:              isURL,
-		OriginalModules:    originalModules,
+		QRVersion:          qrVersion,
+		OriginalDimension:  originalModules,
+		ReducedDimension:   reducedModules,
+		ModuleCount:        redArea,
+		OriginalModules:    origArea,
 		ReducedModules:     reducedModules,
 		ReductionPct:       reductionPct,
-		TransparentDataURL: "data:image/png;base64," + base64.StdEncoding.EncodeToString(transPNG),
-		CleanDataURL:       "data:image/png;base64," + base64.StdEncoding.EncodeToString(solidPNG),
+		ReductionPercent:   reductionPct,
+		DataURL:            transDataURL,
+		TransparentDataURL: transDataURL,
+		CleanDataURL:       solidDataURL,
 		Message:            fmt.Sprintf("Đã nén từ %dx%d ô xuống %dx%d ô (Giảm %.1f%% modules)!", originalModules, originalModules, reducedModules, reducedModules, reductionPct),
 	}, nil
 }
@@ -417,3 +444,35 @@ func renderContentLandingHTML(w http.ResponseWriter, record *models.Intermediate
 </body>
 </html>`, escapedPayload)
 }
+
+// ResolveIntermediateQRHandler handles GET /api/r/resolve?slug={slug}
+func ResolveIntermediateQRHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	slug := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("slug")))
+	if slug == "" {
+		slug = strings.TrimPrefix(r.URL.Path, "/api/r/resolve/")
+	}
+	if slug == "" {
+		http.Error(w, `{"error":"slug parameter is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	if db.DB == nil {
+		http.Error(w, `{"error":"database unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	record, err := db.DB.GetIntermediateQR(r.Context(), slug)
+	if err != nil || record == nil {
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":    true,
+		"slug":       record.ID,
+		"target_url": record.OriginalPayload,
+		"is_url":     record.IsURL,
+	})
+}
+

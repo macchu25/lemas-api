@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 
+	"xkiro-backend/internal/artqr/qr"
 	"xkiro-backend/internal/qrtrans"
 
 	qrcode "github.com/skip2/go-qrcode"
@@ -190,6 +191,13 @@ func QRRemoveBackgroundHandler(w http.ResponseWriter, r *http.Request) {
 	payload := result.OutputPayload
 	if payload == "" {
 		payload = result.InputPayload
+	}
+	if payload == "" && len(fileBytes) > 0 {
+		if decoded, decErr := qr.DecodeQRCode(fileBytes); decErr == nil && decoded != nil && decoded.Payload != "" {
+			payload = decoded.Payload
+			resp.OutputPayload = decoded.Payload
+			resp.QRValid = true
+		}
 	}
 	if payload != "" {
 		baseURL := os.Getenv("INTERMEDIATE_BASE_URL")

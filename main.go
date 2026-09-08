@@ -88,6 +88,7 @@ func main() {
 
 	// Intermediate QR Code Engine (Lowest Module Count Redirection)
 	mux.HandleFunc("/api/art-qr/intermediate", handlers.CreateIntermediateQRHandler)
+	mux.HandleFunc("/api/r/resolve", handlers.ResolveIntermediateQRHandler)
 	mux.HandleFunc("/r/", handlers.RedirectIntermediateQRHandler)
 
 	// Modular Art QR Pipeline Endpoints
