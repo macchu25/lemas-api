@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -132,17 +133,23 @@ func GenerateArtQRHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Handle synchronous generation request
 	if isSync {
-		result, err := defaultArtQRService.GenerateArtQR(r.Context(), params)
+		syncCtx, syncCancel := context.WithTimeout(r.Context(), 120*time.Second)
+		defer syncCancel()
+		result, err := defaultArtQRService.GenerateArtQR(syncCtx, params)
 		w.Header().Set("Content-Type", "application/json")
 		if err != nil || (result != nil && !result.Success) {
 			w.WriteHeader(http.StatusUnprocessableEntity)
 			if result != nil {
 				_ = json.NewEncoder(w).Encode(result)
 			} else {
+				errMsg := err.Error()
+				if syncCtx.Err() != nil {
+					errMsg = "Hệ thống tạo ảnh AI mất quá nhiều thời gian. Vui lòng thử lại sau."
+				}
 				_ = json.NewEncoder(w).Encode(map[string]any{
 					"success":  false,
 					"qr_valid": false,
-					"error":    err.Error(),
+					"error":    errMsg,
 				})
 			}
 			return

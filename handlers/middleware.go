@@ -23,6 +23,8 @@ var allowedOrigins = map[string]bool{
 	"https://lemas.io.vn":          true,
 	"https://www.lemas.io.vn":      true,
 	"https://api.lemas.io.vn":      true,
+	"https://api1.lemas.io.vn":     true,
+	"https://api2.lemas.io.vn":     true,
 	"https://lemas-two.vercel.app": true,
 	"http://localhost:3000":        true,
 	"http://localhost:8080":        true,
