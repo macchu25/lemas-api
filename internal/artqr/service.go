@@ -11,8 +11,11 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"io"
 	"log"
+	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -277,6 +280,52 @@ func (s *Service) AnalyzeStyle(ctx context.Context, refImgBytes []byte, placemen
 }
 
 // loadDefaultSceneImage loads prepackaged preset scene (e.g. Doraemon bread) if no reference was uploaded
+func (s *Service) loadPresetSceneImage(preset *model.ArtQRPreset) []byte {
+	if preset == nil {
+		return loadDefaultSceneImage("bread_toast")
+	}
+
+	refURL := strings.TrimSpace(preset.ReferenceImageURL)
+	if refURL == "" {
+		refURL = strings.TrimSpace(preset.PreviewURL)
+	}
+
+	// 1. If it refers to /presets/<filename> or assets/<filename>
+	if strings.HasPrefix(refURL, "/presets/") || strings.HasPrefix(refURL, "presets/") {
+		filename := strings.TrimPrefix(refURL, "/presets/")
+		filename = strings.TrimPrefix(filename, "presets/")
+		candidates := []string{
+			filepath.Join("assets", filename),
+			filepath.Join("../server/assets", filename),
+			filepath.Join("client/public/presets", filename),
+			filepath.Join("../client/public/presets", filename),
+		}
+		for _, c := range candidates {
+			if data, err := os.ReadFile(c); err == nil && len(data) > 0 {
+				return data
+			}
+		}
+	}
+
+	// 2. Default candidates for bread_toast
+	if preset.ID == "bread_toast" || refURL == "" {
+		return loadDefaultSceneImage("bread_toast")
+	}
+
+	// 3. Remote URL fallback
+	if strings.HasPrefix(refURL, "http://") || strings.HasPrefix(refURL, "https://") {
+		client := &http.Client{Timeout: 6 * time.Second}
+		if resp, err := client.Get(refURL); err == nil && resp.StatusCode == http.StatusOK {
+			defer resp.Body.Close()
+			if data, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20)); err == nil && len(data) > 0 {
+				return data
+			}
+		}
+	}
+
+	return loadDefaultSceneImage(preset.ID)
+}
+
 func loadDefaultSceneImage(presetID string) []byte {
 	if presetID == "bread_toast" || presetID == "" {
 		candidates := []string{
@@ -377,9 +426,9 @@ func (s *Service) CreateJob(ctx context.Context, params CreateJobParams) (*model
 	// 4. Base scene reference image (Reference 1)
 	baseScene := params.ReferenceBytes
 	if len(baseScene) == 0 {
-		baseScene = loadDefaultSceneImage(params.PresetID)
+		baseScene = s.loadPresetSceneImage(preset)
 		if len(baseScene) > 0 {
-			log.Printf("[ArtQR] [%s] Loaded default preset scene reference (%d bytes)", jobID, len(baseScene))
+			log.Printf("[ArtQR] [%s] Loaded preset scene reference (%d bytes)", jobID, len(baseScene))
 		}
 	}
 
