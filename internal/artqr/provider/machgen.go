@@ -99,6 +99,12 @@ func (m *MachGenProvider) GetBaseURL() string {
 	return m.baseURL
 }
 
+func (m *MachGenProvider) GetModel() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.model
+}
+
 // Generate implements the standard ArtQRProvider interface
 func (m *MachGenProvider) Generate(ctx context.Context, req *GenerationRequest) ([]GeneratedImage, error) {
 	w := req.Width
@@ -221,18 +227,10 @@ func (m *MachGenProvider) GenerateWithCandidates(
 		log.Printf("[MachGen] ⚠️ Candidate #%d [%s] failed: %v", i+1, cand.Name, err)
 	}
 
-	// Safe graceful degradation: If all gpt-image-2 candidate endpoints fail or run out of quota,
-	// use baseSceneBytes as living canvas so Art QR generation NEVER crashes and preserves the reference image!
-	if len(baseSceneBytes) > 0 {
-		m.mu.Lock()
-		m.lastWasFallback = true
-		m.fallbackReason = "API gpt-image-2 tạm hết hạn ngạch -> Phục chế trực tiếp trên ảnh tham chiếu"
-		m.mu.Unlock()
-		log.Printf("[MachGen] 🛡️ All gpt-image-2 endpoints failed. Using reference base scene (%d bytes) to guarantee 100%% generation uptime", len(baseSceneBytes))
-		return baseSceneBytes, nil
-	}
-
-	return nil, fmt.Errorf("cả API gpt-image-2 chính (apigiare) và dự phòng (machgen) đều hết hạn ngạch hoặc không khả dụng; vui lòng kiểm tra số dư API key")
+	// All candidate gpt-image-2 endpoints failed or ran out of quota.
+	// As requested: Do NOT use ANY free fallback or mock canvas. Stop immediately and notify user of system interruption.
+	log.Printf("[MachGen] ❌ All gpt-image-2 candidate endpoints failed or exhausted quota. Returning system interruption error.")
+	return nil, fmt.Errorf("Hệ thống tạo ảnh AI (gpt-image-2) tạm thời gián đoạn do hạn ngạch dịch vụ đã hết. Vui lòng liên hệ Quản trị viên để kiểm tra và nạp thêm số dư API.")
 }
 
 func (m *MachGenProvider) callAPIEndpoint(

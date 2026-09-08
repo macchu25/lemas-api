@@ -602,6 +602,18 @@ func (s *Service) processJob(job *model.ArtQRJob, binaryMask *qr.BinaryQRMask, p
 			})
 		}
 	}
+	// If machgen provider has a custom endpoint configured (e.g. mock test server or direct host), prioritize it
+	if mURL := s.machgen.GetBaseURL(); mURL != "" && (strings.Contains(mURL, "127.0.0.1") || strings.Contains(mURL, "localhost") || strings.Contains(mURL, "machgen.ai")) {
+		candidates = append([]provider.EndpointConfig{
+			{
+				BaseURL: mURL,
+				APIKey:  s.machgen.GetAPIKey(),
+				Model:   s.machgen.GetModel(),
+				Name:    "Configured MachGen Override",
+			},
+		}, candidates...)
+	}
+
 	// Fallback to env-configured MachGen if candidate list is empty
 	if len(candidates) == 0 {
 		envKey := os.Getenv("MACHGEN_API_KEY")
@@ -641,8 +653,8 @@ func (s *Service) processJob(job *model.ArtQRJob, binaryMask *qr.BinaryQRMask, p
 		candidates,
 	)
 	if err != nil {
-		log.Printf("[ArtQR] [%s] MachGen guide-image edit failed: %v", job.ID, err)
-		job.SetError("AI không thể hòa trộn QR vào ảnh tham chiếu: " + err.Error())
+		log.Printf("[ArtQR] [%s] gpt-image-2 generation failed: %v", job.ID, err)
+		job.SetError("Hệ thống tạo ảnh AI (gpt-image-2) tạm thời gián đoạn do hết hạn ngạch / số dư API. Vui lòng thử lại sau hoặc liên hệ Quản trị viên để kiểm tra nạp thêm số dư.")
 		return
 	} else {
 		log.Printf("[ArtQR] [%s] MachGen aesthetic generation received (%d bytes)", job.ID, len(machgenResultBytes))

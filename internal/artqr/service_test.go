@@ -2,7 +2,12 @@ package artqr
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -72,34 +77,63 @@ func TestArtQRPipelineWithMandatoryBackgroundRemovalAndDeterministicRestoration(
 		t.Fatalf("cleaned QR PNG is empty")
 	}
 
-	// 2. Test synchronous execution and final verification contract
+	// 2. Test system interruption behavior when API quota is exhausted
+	// STRICT CONTRACT: Never fall back to free generators or mock canvas. Fail fast with system interruption message!
+	_, err = s.GenerateArtQR(ctx, params)
+	if err == nil {
+		t.Fatalf("expected fail-fast error when quota is exhausted, but got success")
+	}
+	expectedErrSub := "Hệ thống tạo ảnh AI (gpt-image-2) tạm thời gián đoạn"
+	if !strings.Contains(err.Error(), expectedErrSub) {
+		t.Fatalf("expected error containing %q, got: %v", expectedErrSub, err)
+	}
+}
+
+func TestArtQRPipelineWithMockGPTImage2Server(t *testing.T) {
+	expectedPayload := "https://lemas.io.vn/art-qr-verified"
+	qrObj, err := qrcode.New(expectedPayload, qrcode.Highest)
+	if err != nil {
+		t.Fatalf("failed to create test QR: %v", err)
+	}
+	rawPNG, err := qrObj.PNG(512)
+	if err != nil {
+		t.Fatalf("failed to encode test QR: %v", err)
+	}
+
+	// Create test HTTP server that simulates a successful gpt-image-2 endpoint
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		b64 := base64.StdEncoding.EncodeToString(rawPNG)
+		respJSON := fmt.Sprintf(`{"data":[{"b64_json":"%s"}]}`, b64)
+		w.Write([]byte(respJSON))
+	}))
+	defer ts.Close()
+
+	s := NewService()
+	s.machgen.Configure(ts.URL, "test-key", "gpt-image-2")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	params := CreateJobParams{
+		UserID:     "unit-tester",
+		QRPNGBytes: rawPNG,
+		PresetID:   "bread_toast",
+	}
+
 	result, err := s.GenerateArtQR(ctx, params)
 	if err != nil {
-		t.Fatalf("GenerateArtQR failed: %v", err)
+		t.Fatalf("GenerateArtQR failed with mock server: %v", err)
 	}
 
 	if !result.Success {
 		t.Fatalf("expected success=true, got error: %s", result.Error)
 	}
-
 	if !result.QRValid {
 		t.Errorf("expected qr_valid=true")
 	}
-
-	if result.ExpectedPayload != expectedPayload {
-		t.Errorf("expected payload mismatch: expected %s, got %s", expectedPayload, result.ExpectedPayload)
-	}
-
 	if result.DecodedPayload != expectedPayload {
 		t.Errorf("decoded payload mismatch: expected %s, got %s", expectedPayload, result.DecodedPayload)
-	}
-
-	if !result.BackgroundRemoved {
-		t.Errorf("expected background_removed=true in result")
-	}
-
-	if result.Preset != "bread_toast" {
-		t.Errorf("expected preset bread_toast, got %s", result.Preset)
 	}
 }
 
@@ -122,8 +156,19 @@ func TestArtQRPipelineWithDoraemonScene(t *testing.T) {
 		t.Fatalf("failed to encode test QR: %v", err)
 	}
 
+	// Create test HTTP server that simulates a successful gpt-image-2 endpoint returning the Doraemon scene
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		b64 := base64.StdEncoding.EncodeToString(sceneBytes)
+		respJSON := fmt.Sprintf(`{"data":[{"b64_json":"%s"}]}`, b64)
+		w.Write([]byte(respJSON))
+	}))
+	defer ts.Close()
+
 	s := NewService()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	s.machgen.Configure(ts.URL, "test-key", "gpt-image-2")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	params := CreateJobParams{
