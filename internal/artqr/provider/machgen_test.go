@@ -2,60 +2,66 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 )
 
-func TestXKiroUsesMultipartEditAndPollsResult(t *testing.T) {
-	var host string
-	polls := 0
+func TestMachGenUploadsTwoImagesAndRunsI2I(t *testing.T) {
+	uploads, polls := 0, 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			t.Error("missing MachGen bearer token")
+		}
 		switch r.URL.Path {
-		case "/v1/images/edits":
-			if r.Method != http.MethodPost {
-				t.Errorf("method=%s", r.Method)
-			}
-			if r.Header.Get("Authorization") != "Bearer secret" {
-				t.Error("missing auth")
-			}
+		case "/api/v0/upload":
+			uploads++
 			if err := r.ParseMultipartForm(2 << 20); err != nil {
 				t.Fatal(err)
 			}
-			file, _, err := r.FormFile("image")
-			if err != nil {
+			if _, _, err := r.FormFile("file"); err != nil {
 				t.Fatal(err)
 			}
-			got, _ := io.ReadAll(file)
-			_ = file.Close()
-			if string(got) != "guide-image" {
-				t.Errorf("source image=%q", got)
+			fmt.Fprintf(w, `{"artifact_path":"source-%d.png"}`, uploads)
+		case "/api/v0/generate":
+			var body struct {
+				Model       string         `json:"model"`
+				TaskType    string         `json:"task_type"`
+				Sources     []string       `json:"src_image_urls"`
+				ImageConfig map[string]int `json:"image_config"`
 			}
-			if r.FormValue("prompt") != "integrate QR" || r.FormValue("model") != "gpt-image" {
-				t.Errorf("form=%v", r.MultipartForm.Value)
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Model != "GPT-Image-2" || body.TaskType != "I2I" {
+				t.Fatalf("wrong task: %+v", body)
+			}
+			if len(body.Sources) != 2 || body.Sources[0] != "@input/source-1.png" || body.Sources[1] != "@input/source-2.png" {
+				t.Fatalf("wrong sources: %v", body.Sources)
+			}
+			if body.ImageConfig["width"] != 1280 || body.ImageConfig["height"] != 1280 {
+				t.Fatalf("wrong size: %v", body.ImageConfig)
 			}
 			w.WriteHeader(http.StatusAccepted)
-			fmt.Fprint(w, `{"id":"job-1","status":"processing"}`)
-		case "/v1/images/generations/job-1":
+			fmt.Fprint(w, `{"task_id":"task-1"}`)
+		case "/api/v0/tasks/task-1":
 			polls++
-			fmt.Fprintf(w, `{"status":"succeeded","data":[{"url":%q}]}`, host+"/result.png")
-		case "/result.png":
+			fmt.Fprint(w, `{"status":"COMPLETED","task_output":{"image":"/api/v0/assets/task-1"}}`)
+		case "/api/v0/assets/task-1":
 			w.Header().Set("Content-Type", "image/png")
-			fmt.Fprint(w, "result-image")
+			fmt.Fprint(w, "generated-image")
 		default:
-			t.Errorf("unexpected path %s", r.URL.Path)
 			http.NotFound(w, r)
 		}
 	}))
 	defer srv.Close()
-	host = srv.URL
-	m := &MachGenProvider{baseURL: host + "/v1", apiKey: "secret", model: "gpt-image-2", httpClient: &http.Client{Timeout: 5 * time.Second}}
-	// Call the branch directly; GenerateWithTwoReferences dispatch is covered separately.
-	got, err := m.callXKiroImageEdit(context.Background(), []byte("guide-image"), "integrate QR", "gpt-image-2", 1024, 1024)
-	if err != nil || string(got) != "result-image" || polls != 1 {
-		t.Fatalf("got=%q polls=%d err=%v", got, polls, err)
+
+	m := &MachGenProvider{baseURL: srv.URL, apiKey: "secret", model: "gpt-image-2", httpClient: &http.Client{Timeout: 5 * time.Second}}
+	got, err := m.callMachGenImageEdit(context.Background(), []byte("guide"), []byte("qr"), "integrate QR", "gpt-image-2")
+	if err != nil || string(got) != "generated-image" || uploads != 2 || polls != 1 {
+		t.Fatalf("got=%q uploads=%d polls=%d err=%v", got, uploads, polls, err)
 	}
 }

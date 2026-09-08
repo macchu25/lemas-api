@@ -153,8 +153,8 @@ func (m *MachGenProvider) GenerateWithTwoReferences(
 			return result, nil
 		}
 		log.Printf("[MachGen] Direct API endpoint call failed (%v), falling back to URL pipeline", err)
-		if strings.Contains(strings.ToLower(m.baseURL), "xkiro") {
-			return nil, fmt.Errorf("xKiro image edit failed: %w", err)
+		if strings.Contains(strings.ToLower(m.baseURL), "machgen.ai") {
+			return nil, fmt.Errorf("MachGen GPT Image 2 edit failed: %w", err)
 		}
 	}
 
@@ -177,8 +177,8 @@ func (m *MachGenProvider) callAPIEndpoint(
 	modelName string,
 	width, height int,
 ) ([]byte, error) {
-	if strings.Contains(strings.ToLower(m.baseURL), "xkiro") {
-		return m.callXKiroImageEdit(ctx, baseSceneBytes, promptText, modelName, width, height)
+	if strings.Contains(strings.ToLower(m.baseURL), "machgen.ai") {
+		return m.callMachGenImageEdit(ctx, baseSceneBytes, cleanedQRBytes, promptText, modelName)
 	}
 	var req *http.Request
 	var err error
@@ -284,73 +284,112 @@ func (m *MachGenProvider) callAPIEndpoint(
 	return nil, fmt.Errorf("could not parse image from API response")
 }
 
-func (m *MachGenProvider) callXKiroImageEdit(ctx context.Context, sourceImage []byte, promptText, modelName string, width, height int) ([]byte, error) {
-	if len(sourceImage) == 0 {
-		return nil, fmt.Errorf("xKiro image edit requires a source image")
+func (m *MachGenProvider) machGenBaseURL() string {
+	base := strings.TrimRight(m.baseURL, "/")
+	for _, suffix := range []string{"/api/v0/generate", "/api/v0", "/v1"} {
+		base = strings.TrimSuffix(base, suffix)
 	}
-	if modelName == "" || modelName == "gpt-image-2" || modelName == "flux" {
-		modelName = "gpt-image"
+	return base
+}
+
+func (m *MachGenProvider) uploadMachGenImage(ctx context.Context, imageBytes []byte, filename string) (string, error) {
+	if len(imageBytes) == 0 {
+		return "", fmt.Errorf("MachGen source image %s is empty", filename)
 	}
 	var body bytes.Buffer
 	w := multipart.NewWriter(&body)
-	file, err := w.CreateFormFile("image", "art-qr-guide.png")
+	file, err := w.CreateFormFile("file", filename)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	if _, err = file.Write(sourceImage); err != nil {
-		return nil, err
+	if _, err = file.Write(imageBytes); err != nil {
+		return "", err
 	}
-	_ = w.WriteField("prompt", promptText)
-	_ = w.WriteField("model", modelName)
-	_ = w.WriteField("size", fmt.Sprintf("%dx%d", width, height))
-	_ = w.WriteField("n", "1")
 	if err = w.Close(); err != nil {
-		return nil, err
+		return "", err
 	}
-
-	base := strings.TrimRight(m.baseURL, "/")
-	for _, suffix := range []string{"/images/generations", "/images/edits"} {
-		base = strings.TrimSuffix(base, suffix)
-	}
-	endpoint := base + "/images/edits"
+	endpoint := m.machGenBaseURL() + "/api/v0/upload"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &body)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	req.Header.Set("Content-Type", w.FormDataContentType())
 	req.Header.Set("Authorization", "Bearer "+m.apiKey)
 	resp, err := m.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	defer resp.Body.Close()
 	responseBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("xKiro edit HTTP %d: %s", resp.StatusCode, string(responseBytes))
+		return "", fmt.Errorf("MachGen upload HTTP %d: %s", resp.StatusCode, string(responseBytes))
 	}
-	var created struct {
-		ID     string `json:"id"`
-		Status string `json:"status"`
-		Data   []struct {
-			URL     string `json:"url"`
-			B64JSON string `json:"b64_json"`
-		} `json:"data"`
-		Error any `json:"error"`
+	var uploaded struct {
+		ArtifactPath string `json:"artifact_path"`
 	}
-	if err := json.Unmarshal(responseBytes, &created); err != nil {
-		return nil, fmt.Errorf("invalid xKiro edit response: %w", err)
+	if err := json.Unmarshal(responseBytes, &uploaded); err != nil || uploaded.ArtifactPath == "" {
+		return "", fmt.Errorf("invalid MachGen upload response: %s", string(responseBytes))
 	}
-	if len(created.Data) > 0 {
-		return m.imageData(ctx, created.Data[0].URL, created.Data[0].B64JSON)
+	return "@input/" + strings.TrimPrefix(uploaded.ArtifactPath, "/"), nil
+}
+
+func (m *MachGenProvider) callMachGenImageEdit(ctx context.Context, guideImage, cleanedQR []byte, promptText, modelName string) ([]byte, error) {
+	if m.apiKey == "" {
+		return nil, fmt.Errorf("MACHGEN_API_KEY is required")
 	}
-	if created.ID == "" {
-		return nil, fmt.Errorf("xKiro edit did not return a job id")
+	if modelName == "" || strings.EqualFold(modelName, "gpt-image-2") || modelName == "flux" {
+		modelName = "GPT-Image-2"
+	}
+	guideRef, err := m.uploadMachGenImage(ctx, guideImage, "art-qr-guide.png")
+	if err != nil {
+		return nil, err
+	}
+	qrRef, err := m.uploadMachGenImage(ctx, cleanedQR, "art-qr-transparent.png")
+	if err != nil {
+		return nil, err
 	}
 
-	pollURL := base + "/images/generations/" + url.PathEscape(created.ID)
+	payload := map[string]any{
+		"model":          modelName,
+		"task_type":      "I2I",
+		"prompt":         promptText,
+		"src_image_urls": []string{guideRef, qrRef},
+		"image_config":   map[string]int{"width": 1280, "height": 1280},
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	endpoint := m.machGenBaseURL() + "/api/v0/generate"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(encoded))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+m.apiKey)
+	resp, err := m.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	responseBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	resp.Body.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("MachGen generate HTTP %d: %s", resp.StatusCode, string(responseBytes))
+	}
+	var created struct {
+		TaskID string `json:"task_id"`
+	}
+	if err := json.Unmarshal(responseBytes, &created); err != nil || created.TaskID == "" {
+		return nil, fmt.Errorf("invalid MachGen generate response: %s", string(responseBytes))
+	}
+
+	pollURL := m.machGenBaseURL() + "/api/v0/tasks/" + url.PathEscape(created.TaskID)
 	delay := 2 * time.Second
 	for {
 		select {
@@ -373,29 +412,50 @@ func (m *MachGenProvider) callXKiroImageEdit(ctx context.Context, sourceImage []
 			return nil, readErr
 		}
 		if pollResp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("xKiro job HTTP %d: %s", pollResp.StatusCode, string(pollBytes))
+			return nil, fmt.Errorf("MachGen task HTTP %d: %s", pollResp.StatusCode, string(pollBytes))
 		}
 		var job struct {
-			Status string `json:"status"`
-			Data   []struct {
-				URL     string `json:"url"`
-				B64JSON string `json:"b64_json"`
-			} `json:"data"`
-			Error any `json:"error"`
+			Status     string            `json:"status"`
+			TaskOutput map[string]string `json:"task_output"`
+			Error      string            `json:"error_msg"`
 		}
 		if err := json.Unmarshal(pollBytes, &job); err != nil {
 			return nil, err
 		}
-		if job.Status == "succeeded" && len(job.Data) > 0 {
-			return m.imageData(ctx, job.Data[0].URL, job.Data[0].B64JSON)
+		if job.Status == "COMPLETED" {
+			imageURL := job.TaskOutput["image"]
+			if imageURL == "" {
+				imageURL = m.machGenBaseURL() + "/api/v0/assets/" + url.PathEscape(created.TaskID)
+			}
+			return m.fetchMachGenAsset(ctx, imageURL)
 		}
-		if job.Status == "failed" || job.Status == "blocked" {
-			return nil, fmt.Errorf("xKiro image edit %s: %v", job.Status, job.Error)
+		if job.Status == "FAILED" {
+			return nil, fmt.Errorf("MachGen image edit failed: %s", job.Error)
 		}
 		if delay < 8*time.Second {
 			delay += time.Second
 		}
 	}
+}
+
+func (m *MachGenProvider) fetchMachGenAsset(ctx context.Context, assetURL string) ([]byte, error) {
+	if strings.HasPrefix(assetURL, "/") {
+		assetURL = m.machGenBaseURL() + assetURL
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, assetURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+m.apiKey)
+	resp, err := m.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("MachGen asset HTTP %d", resp.StatusCode)
+	}
+	return io.ReadAll(resp.Body)
 }
 
 func (m *MachGenProvider) imageData(ctx context.Context, imageURL, b64 string) ([]byte, error) {
