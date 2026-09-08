@@ -235,6 +235,52 @@ func RestoreAndComposite(
 	return buf.Bytes(), nil
 }
 
+// BuildGenerationGuide places the already background-removed QR over the
+// reference scene at the configured placement. The image model receives this
+// single composed image as its edit source, so it can integrate the QR into the
+// scene instead of ignoring a non-standard second reference field.
+func BuildGenerationGuide(baseSceneBytes, cleanedQRBytes []byte, placement model.Placement) ([]byte, error) {
+	base, _, err := image.Decode(bytes.NewReader(baseSceneBytes))
+	if err != nil {
+		return nil, fmt.Errorf("invalid reference scene: %w", err)
+	}
+	qrImage, _, err := image.Decode(bytes.NewReader(cleanedQRBytes))
+	if err != nil {
+		return nil, fmt.Errorf("invalid cleaned QR: %w", err)
+	}
+	if !placement.IsValid() {
+		placement = model.DefaultPlacement()
+	}
+	canvas := scaleImage(base, 1024, 1024)
+	size := int(placement.Size * 1024)
+	x0, y0 := int(placement.X*1024), int(placement.Y*1024)
+	qrBounds := qrImage.Bounds()
+	if size <= 0 || qrBounds.Empty() {
+		return nil, fmt.Errorf("invalid guide placement")
+	}
+	for y := 0; y < size && y0+y < 1024; y++ {
+		sy := qrBounds.Min.Y + y*qrBounds.Dy()/size
+		for x := 0; x < size && x0+x < 1024; x++ {
+			sx := qrBounds.Min.X + x*qrBounds.Dx()/size
+			r, g, b, a := qrImage.At(sx, sy).RGBA()
+			if a == 0 {
+				continue
+			}
+			alpha := float64(a) / 65535.0
+			br, bg, bb, _ := canvas.At(x0+x, y0+y).RGBA()
+			canvas.Set(x0+x, y0+y, color.RGBA{
+				R: uint8((float64(r>>8) * alpha) + (float64(br>>8) * (1 - alpha))),
+				G: uint8((float64(g>>8) * alpha) + (float64(bg>>8) * (1 - alpha))),
+				B: uint8((float64(b>>8) * alpha) + (float64(bb>>8) * (1 - alpha))), A: 255})
+		}
+	}
+	var out bytes.Buffer
+	if err := png.Encode(&out, canvas); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
+
 func clamp255(v int) uint8 {
 	if v > 255 {
 		return 255

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -152,6 +153,9 @@ func (m *MachGenProvider) GenerateWithTwoReferences(
 			return result, nil
 		}
 		log.Printf("[MachGen] Direct API endpoint call failed (%v), falling back to URL pipeline", err)
+		if strings.Contains(strings.ToLower(m.baseURL), "xkiro") {
+			return nil, fmt.Errorf("xKiro image edit failed: %w", err)
+		}
 	}
 
 	// Approach B: Pollinations / Direct Image Stream Engine
@@ -173,6 +177,9 @@ func (m *MachGenProvider) callAPIEndpoint(
 	modelName string,
 	width, height int,
 ) ([]byte, error) {
+	if strings.Contains(strings.ToLower(m.baseURL), "xkiro") {
+		return m.callXKiroImageEdit(ctx, baseSceneBytes, promptText, modelName, width, height)
+	}
 	var req *http.Request
 	var err error
 
@@ -275,6 +282,130 @@ func (m *MachGenProvider) callAPIEndpoint(
 	}
 
 	return nil, fmt.Errorf("could not parse image from API response")
+}
+
+func (m *MachGenProvider) callXKiroImageEdit(ctx context.Context, sourceImage []byte, promptText, modelName string, width, height int) ([]byte, error) {
+	if len(sourceImage) == 0 {
+		return nil, fmt.Errorf("xKiro image edit requires a source image")
+	}
+	if modelName == "" || modelName == "gpt-image-2" || modelName == "flux" {
+		modelName = "gpt-image"
+	}
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	file, err := w.CreateFormFile("image", "art-qr-guide.png")
+	if err != nil {
+		return nil, err
+	}
+	if _, err = file.Write(sourceImage); err != nil {
+		return nil, err
+	}
+	_ = w.WriteField("prompt", promptText)
+	_ = w.WriteField("model", modelName)
+	_ = w.WriteField("size", fmt.Sprintf("%dx%d", width, height))
+	_ = w.WriteField("n", "1")
+	if err = w.Close(); err != nil {
+		return nil, err
+	}
+
+	base := strings.TrimRight(m.baseURL, "/")
+	for _, suffix := range []string{"/images/generations", "/images/edits"} {
+		base = strings.TrimSuffix(base, suffix)
+	}
+	endpoint := base + "/images/edits"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+m.apiKey)
+	resp, err := m.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	responseBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("xKiro edit HTTP %d: %s", resp.StatusCode, string(responseBytes))
+	}
+	var created struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+		Data   []struct {
+			URL     string `json:"url"`
+			B64JSON string `json:"b64_json"`
+		} `json:"data"`
+		Error any `json:"error"`
+	}
+	if err := json.Unmarshal(responseBytes, &created); err != nil {
+		return nil, fmt.Errorf("invalid xKiro edit response: %w", err)
+	}
+	if len(created.Data) > 0 {
+		return m.imageData(ctx, created.Data[0].URL, created.Data[0].B64JSON)
+	}
+	if created.ID == "" {
+		return nil, fmt.Errorf("xKiro edit did not return a job id")
+	}
+
+	pollURL := base + "/images/generations/" + url.PathEscape(created.ID)
+	delay := 2 * time.Second
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delay):
+		}
+		pollReq, err := http.NewRequestWithContext(ctx, http.MethodGet, pollURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		pollReq.Header.Set("Authorization", "Bearer "+m.apiKey)
+		pollResp, err := m.httpClient.Do(pollReq)
+		if err != nil {
+			return nil, err
+		}
+		pollBytes, readErr := io.ReadAll(io.LimitReader(pollResp.Body, 1<<20))
+		pollResp.Body.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		if pollResp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("xKiro job HTTP %d: %s", pollResp.StatusCode, string(pollBytes))
+		}
+		var job struct {
+			Status string `json:"status"`
+			Data   []struct {
+				URL     string `json:"url"`
+				B64JSON string `json:"b64_json"`
+			} `json:"data"`
+			Error any `json:"error"`
+		}
+		if err := json.Unmarshal(pollBytes, &job); err != nil {
+			return nil, err
+		}
+		if job.Status == "succeeded" && len(job.Data) > 0 {
+			return m.imageData(ctx, job.Data[0].URL, job.Data[0].B64JSON)
+		}
+		if job.Status == "failed" || job.Status == "blocked" {
+			return nil, fmt.Errorf("xKiro image edit %s: %v", job.Status, job.Error)
+		}
+		if delay < 8*time.Second {
+			delay += time.Second
+		}
+	}
+}
+
+func (m *MachGenProvider) imageData(ctx context.Context, imageURL, b64 string) ([]byte, error) {
+	if b64 != "" {
+		return base64.StdEncoding.DecodeString(b64)
+	}
+	if imageURL != "" {
+		return m.fetchImageFromURL(ctx, imageURL)
+	}
+	return nil, fmt.Errorf("image result is empty")
 }
 
 func (m *MachGenProvider) callPollinationsStream(
