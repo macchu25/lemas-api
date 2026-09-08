@@ -309,22 +309,18 @@ func (s *Service) loadPresetSceneImage(preset *model.ArtQRPreset) []byte {
 		}
 	}
 
-	// 2. Default candidates for bread_toast
-	if preset.ID == "bread_toast" || refURL == "" {
-		return loadDefaultSceneImage("bread_toast")
-	}
-
-	// 3. Remote URL fallback
+	// 2. Remote URL fallback (HTTP/HTTPS)
 	if strings.HasPrefix(refURL, "http://") || strings.HasPrefix(refURL, "https://") {
-		client := &http.Client{Timeout: 6 * time.Second}
+		client := &http.Client{Timeout: 10 * time.Second}
 		if resp, err := client.Get(refURL); err == nil && resp.StatusCode == http.StatusOK {
 			defer resp.Body.Close()
-			if data, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20)); err == nil && len(data) > 0 {
+			if data, err := io.ReadAll(io.LimitReader(resp.Body, 15<<20)); err == nil && len(data) > 0 {
 				return data
 			}
 		}
 	}
 
+	// 3. Fallback to default scene image only if custom refURL was empty or failed to load
 	return loadDefaultSceneImage(preset.ID)
 }
 
