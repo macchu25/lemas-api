@@ -743,19 +743,13 @@ func (s *Service) processJob(job *model.ArtQRJob, binaryMask *qr.BinaryQRMask, p
 		}
 	}
 
-	// Ref 1: Base scene image (ReferenceImageJPEG)
-	// Ref 2: Cleaned transparent QR from background removal (CleanedQRPNG)
-	guideImage, guideErr := compositor.BuildGenerationGuide(job.ReferenceImageJPEG, job.CleanedQRPNG, job.Placement)
-	if guideErr != nil {
-		job.SetError("Không thể tạo ảnh hướng dẫn từ ảnh mẫu và QR đã tách nền: " + guideErr.Error())
-		return
-	}
-	editPrompt := finalPrompt + "\n\nThe supplied edit image already contains the exact reference scene and the background-removed QR at its required position. Preserve the scene composition. Integrate the QR modules into the named material and lighting while keeping their grid, finder patterns, spacing, and payload unchanged. Do not paste a flat QR sticker and do not move or resize it."
+	// Image 1: Base reference scene (ReferenceImageJPEG)
+	// Image 2: Cleaned transparent QR from background removal (CleanedQRPNG)
 	machgenResultBytes, err := s.machgen.GenerateWithCandidates(
 		ctx,
-		guideImage,
+		job.ReferenceImageJPEG,
 		job.CleanedQRPNG,
-		editPrompt,
+		finalPrompt,
 		1024,
 		1024,
 		candidates,

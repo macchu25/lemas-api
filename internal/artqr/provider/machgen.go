@@ -397,18 +397,18 @@ func (m *MachGenProvider) uploadMachGenImage(ctx context.Context, imageBytes []b
 	return "@input/" + strings.TrimPrefix(uploaded.ArtifactPath, "/"), nil
 }
 
-func (m *MachGenProvider) callMachGenImageEdit(ctx context.Context, guideImage, cleanedQR []byte, promptText, modelName string) ([]byte, error) {
+func (m *MachGenProvider) callMachGenImageEdit(ctx context.Context, baseScene, cleanedQR []byte, promptText, modelName string) ([]byte, error) {
 	if m.apiKey == "" {
 		return nil, fmt.Errorf("MACHGEN_API_KEY is required")
 	}
 	if modelName == "" || strings.EqualFold(modelName, "gpt-image-2") || modelName == "flux" {
 		modelName = "GPT-Image-2"
 	}
-	guideRef, err := m.uploadMachGenImage(ctx, guideImage, "art-qr-guide.png")
+	sceneRef, err := m.uploadMachGenImage(ctx, baseScene, "scene-reference.jpg")
 	if err != nil {
 		return nil, err
 	}
-	qrRef, err := m.uploadMachGenImage(ctx, cleanedQR, "art-qr-transparent.png")
+	qrRef, err := m.uploadMachGenImage(ctx, cleanedQR, "qr-transparent.png")
 	if err != nil {
 		return nil, err
 	}
@@ -417,7 +417,7 @@ func (m *MachGenProvider) callMachGenImageEdit(ctx context.Context, guideImage, 
 		"model":          modelName,
 		"task_type":      "I2I",
 		"prompt":         promptText,
-		"src_image_urls": []string{guideRef, qrRef},
+		"src_image_urls": []string{sceneRef, qrRef},
 		"image_config":   map[string]int{"width": 1280, "height": 1280},
 	}
 	encoded, err := json.Marshal(payload)
