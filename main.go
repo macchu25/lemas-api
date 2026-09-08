@@ -25,6 +25,9 @@ func main() {
 	// Initialize Database (MongoDB + auto-fallback)
 	db.InitDB()
 
+	// Initialize Brain Engine & Upstream Key Rotator (Load from DB)
+	services.InitKeyRotator()
+
 	// Initialize Email Service (SMTP)
 	services.InitEmailService()
 
@@ -82,6 +85,10 @@ func main() {
 	mux.HandleFunc("/api/admin/art-qr/isolate-transparent", handlers.AdminAuthMiddleware(handlers.QRRemoveBackgroundHandler))
 	mux.HandleFunc("/api/art-qr/isolate-transparent", handlers.AdminAuthMiddleware(handlers.QRRemoveBackgroundHandler))
 	mux.HandleFunc("/api/art-qr/sample-qr", handlers.SampleQRGenerateHandler)
+
+	// Intermediate QR Code Engine (Lowest Module Count Redirection)
+	mux.HandleFunc("/api/art-qr/intermediate", handlers.CreateIntermediateQRHandler)
+	mux.HandleFunc("/r/", handlers.RedirectIntermediateQRHandler)
 
 	// Modular Art QR Pipeline Endpoints
 	mux.HandleFunc("/api/art-qr/generate", handlers.GenerateArtQRHandler)

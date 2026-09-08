@@ -7,6 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"xkiro-backend/db"
+	"xkiro-backend/models"
 )
 
 func TestAdminUpstreamKeyManagementSecurity(t *testing.T) {
@@ -104,3 +107,63 @@ func TestAdminUpstreamKeyManagementSecurity(t *testing.T) {
 		t.Fatalf("DeleteKey expected 200, got %d: %s", wDel.Code, wDel.Body.String())
 	}
 }
+
+func TestAdminUpstreamKeyDatabasePersistence(t *testing.T) {
+	// Initialize store
+	store := db.InitDB()
+	ctx := t.Context()
+
+	testKey := &models.UpstreamKey{
+		ID:        "test-persist-1",
+		Key:       "sk-secret-12345",
+		MaskedKey: "sk••••12345",
+		Name:      "Persisted Key #1",
+		Provider:  "MachGen Studio",
+		BaseURL:   "https://image.pollinations.ai",
+		IsActive:  true,
+	}
+
+	// 1. Create in store
+	if err := store.CreateUpstreamKey(ctx, testKey); err != nil {
+		t.Fatalf("CreateUpstreamKey failed: %v", err)
+	}
+
+	// 2. Fetch all keys from store
+	keys, err := store.GetAllUpstreamKeys(ctx)
+	if err != nil {
+		t.Fatalf("GetAllUpstreamKeys failed: %v", err)
+	}
+	found := false
+	for _, k := range keys {
+		if k.ID == "test-persist-1" {
+			found = true
+			if k.Key != "sk-secret-12345" {
+				t.Errorf("expected secret raw key preserved in DB, got %s", k.Key)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("test-persist-1 not found in DB keys: %#v", keys)
+	}
+
+	// 3. Update key status
+	testKey.IsActive = false
+	if err := store.UpdateUpstreamKey(ctx, testKey); err != nil {
+		t.Fatalf("UpdateUpstreamKey failed: %v", err)
+	}
+
+	// 4. Delete key from store
+	if err := store.DeleteUpstreamKey(ctx, "test-persist-1"); err != nil {
+		t.Fatalf("DeleteUpstreamKey failed: %v", err)
+	}
+
+	// 5. Verify deleted
+	keysAfter, _ := store.GetAllUpstreamKeys(ctx)
+	for _, k := range keysAfter {
+		if k.ID == "test-persist-1" {
+			t.Fatalf("key test-persist-1 was not deleted from DB!")
+		}
+	}
+}
+

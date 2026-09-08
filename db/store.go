@@ -79,6 +79,17 @@ type Store interface {
 	AddUserGiftTokens(ctx context.Context, userID string, tokens int64) error
 	ConsumeUserGiftTokens(ctx context.Context, userID string, tokens int64) error
 
+	// Upstream Keys (xKiro & MachGen Rotator Keys)
+	GetAllUpstreamKeys(ctx context.Context) ([]models.UpstreamKey, error)
+	CreateUpstreamKey(ctx context.Context, k *models.UpstreamKey) error
+	UpdateUpstreamKey(ctx context.Context, k *models.UpstreamKey) error
+	DeleteUpstreamKey(ctx context.Context, id string) error
+
+	// Intermediate QR Codes (Minimal Module Proxy)
+	CreateIntermediateQR(ctx context.Context, qr *models.IntermediateQR) error
+	GetIntermediateQR(ctx context.Context, id string) (*models.IntermediateQR, error)
+	IncrementIntermediateQRHits(ctx context.Context, id string) error
+
 	// Admin
 	GetAllUsers(ctx context.Context) ([]models.User, error)
 	GetAllApiKeys(ctx context.Context) ([]models.ApiKey, error)
@@ -105,7 +116,9 @@ type MemoryStore struct {
 	messages     []models.ContactMessage
 	usageLogs    []models.UsageLog
 	topupTxs     []models.TopupTransaction
-	giftcodes    map[string]*models.Giftcode
+	giftcodes       map[string]*models.Giftcode
+	upstreamKeys    map[string]*models.UpstreamKey
+	intermediateQRs map[string]*models.IntermediateQR
 }
 
 func loadEnvFile() {
@@ -162,9 +175,11 @@ func InitDB() Store {
 
 	log.Println("[DB] MongoDB not reachable. Using built-in high-performance MemoryStore (zero setup required).")
 	memStore := &MemoryStore{
-		users:     make(map[string]*models.User),
-		apiKeys:   make(map[string]*models.ApiKey),
-		giftcodes: make(map[string]*models.Giftcode),
+		users:           make(map[string]*models.User),
+		apiKeys:         make(map[string]*models.ApiKey),
+		giftcodes:       make(map[string]*models.Giftcode),
+		upstreamKeys:    make(map[string]*models.UpstreamKey),
+		intermediateQRs: make(map[string]*models.IntermediateQR),
 	}
 	DB = memStore
 	SeedData(memStore)
@@ -546,6 +561,78 @@ func (m *MemoryStore) ConsumeUserGiftTokens(ctx context.Context, userID string, 
 		return nil
 	}
 	return fmt.Errorf("user not found")
+}
+
+func (m *MemoryStore) GetAllUpstreamKeys(ctx context.Context) ([]models.UpstreamKey, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	res := make([]models.UpstreamKey, 0, len(m.upstreamKeys))
+	for _, k := range m.upstreamKeys {
+		res = append(res, *k)
+	}
+	return res, nil
+}
+
+func (m *MemoryStore) CreateUpstreamKey(ctx context.Context, k *models.UpstreamKey) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.upstreamKeys == nil {
+		m.upstreamKeys = make(map[string]*models.UpstreamKey)
+	}
+	copy := *k
+	m.upstreamKeys[k.ID] = &copy
+	return nil
+}
+
+func (m *MemoryStore) UpdateUpstreamKey(ctx context.Context, k *models.UpstreamKey) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.upstreamKeys == nil {
+		m.upstreamKeys = make(map[string]*models.UpstreamKey)
+	}
+	copy := *k
+	m.upstreamKeys[k.ID] = &copy
+	return nil
+}
+
+func (m *MemoryStore) DeleteUpstreamKey(ctx context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.upstreamKeys != nil {
+		delete(m.upstreamKeys, id)
+	}
+	return nil
+}
+
+func (m *MemoryStore) CreateIntermediateQR(ctx context.Context, qr *models.IntermediateQR) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.intermediateQRs == nil {
+		m.intermediateQRs = make(map[string]*models.IntermediateQR)
+	}
+	copy := *qr
+	m.intermediateQRs[qr.ID] = &copy
+	return nil
+}
+
+func (m *MemoryStore) GetIntermediateQR(ctx context.Context, id string) (*models.IntermediateQR, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if qr, ok := m.intermediateQRs[id]; ok {
+		copy := *qr
+		return &copy, nil
+	}
+	return nil, fmt.Errorf("intermediate qr not found: %s", id)
+}
+
+func (m *MemoryStore) IncrementIntermediateQRHits(ctx context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if qr, ok := m.intermediateQRs[id]; ok {
+		qr.Hits++
+		return nil
+	}
+	return fmt.Errorf("intermediate qr not found: %s", id)
 }
 
 // ================= MongoStore Methods =================
@@ -979,3 +1066,62 @@ func (ms *MongoStore) ConsumeUserGiftTokens(ctx context.Context, userID string, 
 	}
 	return nil
 }
+
+func (ms *MongoStore) GetAllUpstreamKeys(ctx context.Context) ([]models.UpstreamKey, error) {
+	coll := ms.database.Collection("upstream_keys")
+	cursor, err := coll.Find(ctx, bson.M{})
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var list []models.UpstreamKey
+	if err := cursor.All(ctx, &list); err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+func (ms *MongoStore) CreateUpstreamKey(ctx context.Context, k *models.UpstreamKey) error {
+	coll := ms.database.Collection("upstream_keys")
+	_, err := coll.ReplaceOne(ctx, bson.M{"_id": k.ID}, k, options.Replace().SetUpsert(true))
+	return err
+}
+
+func (ms *MongoStore) UpdateUpstreamKey(ctx context.Context, k *models.UpstreamKey) error {
+	coll := ms.database.Collection("upstream_keys")
+	_, err := coll.ReplaceOne(ctx, bson.M{"_id": k.ID}, k, options.Replace().SetUpsert(true))
+	return err
+}
+
+func (ms *MongoStore) DeleteUpstreamKey(ctx context.Context, id string) error {
+	coll := ms.database.Collection("upstream_keys")
+	_, err := coll.DeleteOne(ctx, bson.M{"_id": id})
+	return err
+}
+
+func (ms *MongoStore) CreateIntermediateQR(ctx context.Context, qr *models.IntermediateQR) error {
+	coll := ms.database.Collection("intermediate_qrs")
+	_, err := coll.ReplaceOne(ctx, bson.M{"_id": qr.ID}, qr, options.Replace().SetUpsert(true))
+	return err
+}
+
+func (ms *MongoStore) GetIntermediateQR(ctx context.Context, id string) (*models.IntermediateQR, error) {
+	coll := ms.database.Collection("intermediate_qrs")
+	var qr models.IntermediateQR
+	err := coll.FindOne(ctx, bson.M{"_id": id}).Decode(&qr)
+	if err != nil {
+		return nil, err
+	}
+	return &qr, nil
+}
+
+func (ms *MongoStore) IncrementIntermediateQRHits(ctx context.Context, id string) error {
+	coll := ms.database.Collection("intermediate_qrs")
+	_, err := coll.UpdateOne(ctx, bson.M{"_id": id}, bson.M{
+		"$inc": bson.M{"hits": 1},
+	})
+	return err
+}
+
+

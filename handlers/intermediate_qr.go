@@ -1,0 +1,419 @@
+package handlers
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"html"
+	"image"
+	"image/color"
+	"image/png"
+	"io"
+	"log"
+	"net/http"
+	"net/url"
+	"os"
+	"strings"
+	"time"
+
+	"xkiro-backend/db"
+	"xkiro-backend/internal/artqr/qr"
+	"xkiro-backend/models"
+
+	qrcode "github.com/skip2/go-qrcode"
+)
+
+// generateShortSlug produces a compact 4-character slug for maximum QR brevity
+func generateShortSlug() string {
+	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
+	b := make([]byte, 4)
+	_, _ = rand.Read(b)
+	for i := range b {
+		b[i] = charset[int(b[i])%len(charset)]
+	}
+	return string(b)
+}
+
+// GenerateLowestVersionQR finds the lowest possible QR Version (down to Version 1 = 21 modules)
+func GenerateLowestVersionQR(content string, level qrcode.RecoveryLevel) (*qrcode.QRCode, error) {
+	var bestQR *qrcode.QRCode
+	minModules := 9999
+
+	var candidates []string
+	if strings.HasPrefix(strings.ToLower(content), "http://") || strings.HasPrefix(strings.ToLower(content), "https://") {
+		// Uppercase triggers QR Alphanumeric Mode (up to 25 chars in Version 1 = 21x21 modules!)
+		candidates = []string{strings.ToUpper(content), content}
+	} else {
+		candidates = []string{content}
+	}
+
+	for _, cand := range candidates {
+		for v := 1; v <= 40; v++ {
+			q, err := qrcode.NewWithForcedVersion(cand, v, level)
+			if err == nil {
+				q.DisableBorder = true
+				modules := len(q.Bitmap())
+				if modules < minModules {
+					minModules = modules
+					bestQR = q
+				}
+				break
+			}
+		}
+	}
+
+	if bestQR != nil {
+		bestQR.DisableBorder = true
+		return bestQR, nil
+	}
+	defaultQ, err := qrcode.New(content, level)
+	if err == nil {
+		defaultQ.DisableBorder = true
+	}
+	return defaultQ, err
+}
+
+// CalculateQRModuleCount returns the exact grid dimension (modules per side) for a given text
+func CalculateQRModuleCount(text string, level qrcode.RecoveryLevel) int {
+	q, err := qrcode.New(text, level)
+	if err != nil {
+		return 21 // Fallback default
+	}
+	q.DisableBorder = true
+	bm := q.Bitmap()
+	if len(bm) > 0 {
+		return len(bm)
+	}
+	return 21
+}
+
+// GenerateTransparentQR renders a 2D QR bitmap into a transparent PNG
+func GenerateTransparentQR(bm [][]bool, moduleSize int, borderModules int) ([]byte, error) {
+	gridSize := len(bm)
+	if gridSize == 0 {
+		return nil, fmt.Errorf("empty qr bitmap")
+	}
+	totalModules := gridSize + 2*borderModules
+	imgSize := totalModules * moduleSize
+
+	img := image.NewNRGBA(image.Rect(0, 0, imgSize, imgSize))
+
+	// All background pixels are transparent (alpha = 0)
+	for y := 0; y < gridSize; y++ {
+		for x := 0; x < gridSize; x++ {
+			if bm[y][x] {
+				startX := (x + borderModules) * moduleSize
+				startY := (y + borderModules) * moduleSize
+				for py := 0; py < moduleSize; py++ {
+					for px := 0; px < moduleSize; px++ {
+						img.SetNRGBA(startX+px, startY+py, color.NRGBA{R: 0, G: 0, B: 0, A: 255})
+					}
+				}
+			}
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+type IntermediateQRRequest struct {
+	Payload string `json:"payload"`
+}
+
+type IntermediateQRResponse struct {
+	Success            bool    `json:"success"`
+	ID                 string  `json:"id"`
+	ShortURL           string  `json:"short_url"`
+	OriginalPayload    string  `json:"original_payload"`
+	IsURL              bool    `json:"is_url"`
+	OriginalModules    int     `json:"original_modules"`
+	ReducedModules     int     `json:"reduced_modules"`
+	ReductionPct       float64 `json:"reduction_pct"`
+	TransparentDataURL string  `json:"transparent_data_url"`
+	CleanDataURL       string  `json:"clean_data_url"`
+	Message            string  `json:"message,omitempty"`
+	Error              string  `json:"error,omitempty"`
+}
+
+// CreateIntermediateQRHandler generates an intermediate redirect QR with minimal module count
+// POST /api/art-qr/intermediate
+func CreateIntermediateQRHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	var originalPayload string
+	contentType := r.Header.Get("Content-Type")
+
+	if strings.Contains(contentType, "multipart/form-data") {
+		_ = r.ParseMultipartForm(10 << 20)
+		if text := r.FormValue("payload"); strings.TrimSpace(text) != "" {
+			originalPayload = strings.TrimSpace(text)
+		} else {
+			file, _, err := r.FormFile("image")
+			if err == nil {
+				defer file.Close()
+				data, readErr := io.ReadAll(file)
+				if readErr == nil && len(data) > 0 {
+					decoded, decErr := qr.DecodeQRCode(data)
+					if decErr == nil && decoded != nil && decoded.Payload != "" {
+						originalPayload = decoded.Payload
+					}
+				}
+			}
+		}
+	} else if strings.Contains(contentType, "application/json") {
+		var req IntermediateQRRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+			originalPayload = strings.TrimSpace(req.Payload)
+		}
+	}
+
+	if originalPayload == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "Vui lòng tải lên ảnh chứa mã QR hợp lệ hoặc nhập nội dung/URL cần tạo mã QR",
+		})
+		return
+	}
+
+	// Determine host domain for short intermediate link
+	baseURL := os.Getenv("INTERMEDIATE_BASE_URL")
+	if baseURL == "" {
+		scheme := "http"
+		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+			scheme = "https"
+		}
+		host := r.Host
+		if host == "" {
+			host = "localhost:8080"
+		}
+		baseURL = fmt.Sprintf("%s://%s", scheme, host)
+	}
+
+	resp, err := GenerateIntermediateQR(r.Context(), originalPayload, baseURL)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// GenerateIntermediateQR creates a short redirection slug, saves it in DB, and generates minimal Version 1/2 QR
+func GenerateIntermediateQR(ctx context.Context, originalPayload string, baseURL string) (*IntermediateQRResponse, error) {
+	originalPayload = strings.TrimSpace(originalPayload)
+	if originalPayload == "" {
+		return nil, fmt.Errorf("payload không được để trống")
+	}
+
+	// Determine if original payload is a valid Web URL
+	isURL := false
+	parsed, err := url.ParseRequestURI(originalPayload)
+	if err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") {
+		isURL = true
+	}
+
+	// Calculate original module dimension (typically Medium error correction)
+	originalModules := CalculateQRModuleCount(originalPayload, qrcode.Medium)
+
+	baseURL = strings.TrimRight(baseURL, "/")
+
+	// Generate unique slug
+	slug := generateShortSlug()
+	if db.DB != nil {
+		for i := 0; i < 5; i++ {
+			if existing, _ := db.DB.GetIntermediateQR(ctx, slug); existing == nil {
+				break
+			}
+			slug = generateShortSlug()
+		}
+	}
+
+	shortURL := fmt.Sprintf("%s/r/%s", baseURL, slug)
+
+	// Generate intermediate QR with Level L (Lowest possible module count -> Version 1 = 21x21 modules!)
+	interQR, err := GenerateLowestVersionQR(shortURL, qrcode.Low)
+	if err != nil {
+		return nil, fmt.Errorf("không thể khởi tạo mã QR trung gian: %v", err)
+	}
+
+	bm := interQR.Bitmap()
+	reducedModules := len(bm)
+	if reducedModules == 0 {
+		reducedModules = 21
+	}
+
+	// Calculate module count reduction percentage
+	origArea := originalModules * originalModules
+	redArea := reducedModules * reducedModules
+	reductionPct := 0.0
+	if origArea > redArea {
+		reductionPct = (1.0 - float64(redArea)/float64(origArea)) * 100.0
+	}
+
+	// Render Transparent PNG (Module size = 16px, Border = 2 modules)
+	transPNG, err := GenerateTransparentQR(bm, 16, 2)
+	if err != nil {
+		return nil, fmt.Errorf("lỗi khi render ảnh PNG trong suốt: %v", err)
+	}
+
+	// Render Solid White PNG
+	solidPNG, _ := interQR.PNG(512)
+
+	// Save to MongoDB / MemoryStore
+	now := time.Now()
+	qrRecord := &models.IntermediateQR{
+		ID:              slug,
+		OriginalPayload: originalPayload,
+		ShortURL:        shortURL,
+		IsURL:           isURL,
+		OriginalModules: originalModules,
+		ReducedModules:  reducedModules,
+		ReductionPct:    reductionPct,
+		Hits:            0,
+		CreatedAt:       now,
+	}
+
+	if db.DB != nil {
+		if err := db.DB.CreateIntermediateQR(ctx, qrRecord); err != nil {
+			log.Printf("[IntermediateQR] ⚠️ DB save warning: %v", err)
+		}
+	}
+
+	return &IntermediateQRResponse{
+		Success:            true,
+		ID:                 slug,
+		ShortURL:           shortURL,
+		OriginalPayload:    originalPayload,
+		IsURL:              isURL,
+		OriginalModules:    originalModules,
+		ReducedModules:     reducedModules,
+		ReductionPct:       reductionPct,
+		TransparentDataURL: "data:image/png;base64," + base64.StdEncoding.EncodeToString(transPNG),
+		CleanDataURL:       "data:image/png;base64," + base64.StdEncoding.EncodeToString(solidPNG),
+		Message:            fmt.Sprintf("Đã nén từ %dx%d ô xuống %dx%d ô (Giảm %.1f%% modules)!", originalModules, originalModules, reducedModules, reducedModules, reductionPct),
+	}, nil
+}
+
+// RedirectIntermediateQRHandler handles GET /r/{slug}
+func RedirectIntermediateQRHandler(w http.ResponseWriter, r *http.Request) {
+	slug := strings.TrimPrefix(r.URL.Path, "/r/")
+	slug = strings.ToLower(strings.TrimSpace(slug))
+
+	if slug == "" {
+		http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
+		return
+	}
+
+	if db.DB == nil {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		render404HTML(w, slug)
+		return
+	}
+
+	record, err := db.DB.GetIntermediateQR(r.Context(), slug)
+	if err != nil || record == nil {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		render404HTML(w, slug)
+		return
+	}
+
+	// Increment hits in background
+	go func(id string) {
+		_ = db.DB.IncrementIntermediateQRHits(r.Context(), id)
+	}(slug)
+
+	// If payload is a web URL, immediately 302 redirect!
+	if record.IsURL || strings.HasPrefix(record.OriginalPayload, "http://") || strings.HasPrefix(record.OriginalPayload, "https://") {
+		http.Redirect(w, r, record.OriginalPayload, http.StatusFound)
+		return
+	}
+
+	// Otherwise, render sleek mobile landing page for VietQR or plain text
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	renderContentLandingHTML(w, record)
+}
+
+func render404HTML(w http.ResponseWriter, slug string) {
+	fmt.Fprintf(w, `<!DOCTYPE html>
+<html lang="vi">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Mã QR Không Tồn Tại - Lemas AI</title>
+	<style>
+		body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #06080e; color: #fff; margin: 0; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; box-sizing: border-box; text-align: center; }
+		.card { background: #0e1320; border: 1px solid rgba(255,255,255,0.1); border-radius: 24px; padding: 36px 28px; max-width: 420px; width: 100%%; box-shadow: 0 20px 60px rgba(0,0,0,0.6); }
+		.icon { font-size: 48px; margin-bottom: 16px; }
+		h1 { font-size: 20px; margin: 0 0 10px; color: #f87171; }
+		p { font-size: 13px; color: #94a3b8; line-height: 1.6; margin: 0 0 24px; }
+		.btn { display: inline-block; background: linear-gradient(135deg, #06b6d4, #3b82f6); color: #fff; text-decoration: none; font-weight: bold; font-size: 13px; padding: 12px 28px; border-radius: 12px; }
+	</style>
+</head>
+<body>
+	<div class="card">
+		<div class="icon">⚠️</div>
+		<h1>Mã QR Không Tồn Tại</h1>
+		<p>Mã liên kết trung gian <code>/r/%s</code> không tìm thấy hoặc đã hết hạn trong hệ thống.</p>
+		<a href="/" class="btn">Về Trang Chủ Lemas.AI</a>
+	</div>
+</body>
+</html>`, html.EscapeString(slug))
+}
+
+func renderContentLandingHTML(w http.ResponseWriter, record *models.IntermediateQR) {
+	escapedPayload := html.EscapeString(record.OriginalPayload)
+	fmt.Fprintf(w, `<!DOCTYPE html>
+<html lang="vi">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Nội Dung Mã QR - Lemas Art QR</title>
+	<style>
+		body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #070a12; color: #fff; margin: 0; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 16px; box-sizing: border-box; }
+		.card { background: #0d1222; border: 1px solid rgba(255,255,255,0.12); border-radius: 24px; padding: 32px 24px; max-width: 480px; width: 100%%; box-shadow: 0 24px 70px rgba(0,0,0,0.7); text-align: center; }
+		.badge { display: inline-block; background: rgba(16,185,129,0.15); border: 1px solid rgba(16,185,129,0.3); color: #34d399; font-size: 11px; font-weight: bold; padding: 4px 12px; border-radius: 20px; margin-bottom: 16px; }
+		h1 { font-size: 18px; margin: 0 0 12px; color: #fff; }
+		.payload-box { background: #05070d; border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 16px; font-family: monospace; font-size: 12px; color: #38bdf8; text-align: left; word-break: break-all; max-height: 180px; overflow-y: auto; margin-bottom: 20px; line-height: 1.5; }
+		.btn { display: block; width: 100%%; box-sizing: border-box; background: linear-gradient(135deg, #f59e0b, #ec4899); color: #000; font-weight: 800; font-size: 14px; padding: 14px; border-radius: 14px; border: none; cursor: pointer; transition: opacity 0.2s; }
+		.btn:hover { opacity: 0.9; }
+		.hint { font-size: 11px; color: #64748b; margin-top: 14px; }
+	</style>
+</head>
+<body>
+	<div class="card">
+		<div class="badge">⚡ Lemas Art QR Gateway</div>
+		<h1>Nội Dung Mã QR Chuyển Tiếp</h1>
+		<div class="payload-box" id="payloadText">%s</div>
+		<button class="btn" onclick="copyContent()">📋 Sao Chép Nội Dung</button>
+		<p class="hint">Được chuyển tiếp bảo mật qua hạ tầng Lemas.AI (Mã nén tối giản)</p>
+	</div>
+	<script>
+		function copyContent() {
+			var text = document.getElementById('payloadText').innerText;
+			navigator.clipboard.writeText(text).then(function() {
+				alert('Đã sao chép nội dung vào khay nhớ tạm!');
+			});
+		}
+	</script>
+</body>
+</html>`, escapedPayload)
+}

@@ -15,24 +15,13 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"xkiro-backend/db"
+	"xkiro-backend/models"
 )
 
-type UpstreamKey struct {
-	ID             string    `json:"id"`
-	Key            string    `json:"-"` // SECURITY: NEVER serialized into JSON response!
-	MaskedKey      string    `json:"key_masked"`
-	Name           string    `json:"name"` // Tên gợi nhớ tài khoản / chủ sở hữu key
-	Provider       string    `json:"provider"`
-	BaseURL        string    `json:"base_url,omitempty"`
-	RequestCount   uint64    `json:"request_count"`
-	ErrorCount     uint64    `json:"error_count"`
-	IsActive       bool      `json:"is_active"`
-	LastUsed       time.Time `json:"last_used"`
-	LastError      string    `json:"last_error,omitempty"`
-	LastStatusCode int       `json:"last_status_code,omitempty"`
-	LastChecked    time.Time `json:"last_checked"`
-	AddedAt        time.Time `json:"added_at"`
-}
+type UpstreamKey = models.UpstreamKey
+
 
 type KeyRotator struct {
 	mu           sync.RWMutex
@@ -66,42 +55,69 @@ func randomID() string {
 
 func InitKeyRotator() *KeyRotator {
 	once.Do(func() {
-		rawKeys := []string{}
-
-		// Load keys exclusively from environment variables (.env / production env)
-		if envKeys := os.Getenv("UPSTREAM_API_KEYS"); envKeys != "" {
-			parts := strings.Split(envKeys, ",")
-			for _, p := range parts {
-				p = strings.TrimSpace(p)
-				if p != "" {
-					rawKeys = append(rawKeys, p)
-				}
-			}
-		}
-
-		if len(rawKeys) == 0 {
-			log.Println("[Rotator] ⚠️ WARNING: No UPSTREAM_API_KEYS configured in .env!")
-		}
-
 		baseURL := os.Getenv("UPSTREAM_BASE_URL")
 		if baseURL == "" {
 			baseURL = "https://api.xkiro.com/v1"
 		}
 
-		now := time.Now()
-		keyObjects := make([]*UpstreamKey, len(rawKeys))
-		for i, k := range rawKeys {
-			keyObjects[i] = &UpstreamKey{
-				ID:          fmt.Sprintf("key-%d", i+1),
-				Key:         k,
-				MaskedKey:   MaskKey(k),
-				Name:        fmt.Sprintf("ENV Account #%d", i+1),
-				Provider:    "xKiro Upstream",
-				BaseURL:     baseURL,
-				IsActive:    true,
-				LastUsed:    now,
-				LastChecked: now,
-				AddedAt:     now,
+		var keyObjects []*UpstreamKey
+
+		// 1. Try loading persisted keys from DB Store (MongoDB / Memory)
+		if db.DB != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			persisted, err := db.DB.GetAllUpstreamKeys(ctx)
+			cancel()
+			if err == nil && len(persisted) > 0 {
+				log.Printf("[Rotator] 💾 Loaded %d persistent Upstream Keys from Database!", len(persisted))
+				for _, pk := range persisted {
+					kCopy := pk
+					if kCopy.BaseURL == "" {
+						kCopy.BaseURL = baseURL
+					}
+					keyObjects = append(keyObjects, &kCopy)
+				}
+			}
+		}
+
+		// 2. If DB is empty, seed from environment variable (.env UPSTREAM_API_KEYS)
+		if len(keyObjects) == 0 {
+			rawKeys := []string{}
+			if envKeys := os.Getenv("UPSTREAM_API_KEYS"); envKeys != "" {
+				parts := strings.Split(envKeys, ",")
+				for _, p := range parts {
+					p = strings.TrimSpace(p)
+					if p != "" {
+						rawKeys = append(rawKeys, p)
+					}
+				}
+			}
+
+			if len(rawKeys) == 0 {
+				log.Println("[Rotator] ⚠️ WARNING: No UPSTREAM_API_KEYS configured in .env or DB!")
+			}
+
+			now := time.Now()
+			for i, k := range rawKeys {
+				keyObj := &UpstreamKey{
+					ID:          fmt.Sprintf("key-%d", i+1),
+					Key:         k,
+					MaskedKey:   MaskKey(k),
+					Name:        fmt.Sprintf("ENV Account #%d", i+1),
+					Provider:    "xKiro Upstream",
+					BaseURL:     baseURL,
+					IsActive:    true,
+					LastUsed:    now,
+					LastChecked: now,
+					AddedAt:     now,
+				}
+				keyObjects = append(keyObjects, keyObj)
+
+				// Seed directly into DB so it persists
+				if db.DB != nil {
+					ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+					_ = db.DB.CreateUpstreamKey(ctx, keyObj)
+					cancel()
+				}
 			}
 		}
 
@@ -114,7 +130,7 @@ func InitKeyRotator() *KeyRotator {
 			baseURL: baseURL,
 		}
 
-		log.Printf("[Rotator] 🚀 Initialized Brain Engine with %d upstream rotating API keys (Base: %s)", len(rawKeys), baseURL)
+		log.Printf("[Rotator] 🚀 Initialized Brain Engine with %d upstream rotating API keys (Base: %s)", len(keyObjects), baseURL)
 		log.Println("[Rotator] 🛡️ Stealth Mode active: Passive on-demand health tracking enabled (Startup bulk ping disabled)")
 	})
 
@@ -282,6 +298,17 @@ func (r *KeyRotator) AddKey(ctx context.Context, rawKey string, name string, pro
 	r.keys = append(r.keys, newKey)
 	log.Printf("[Rotator] 🔑 Added new Upstream Key %s (%s) to pool. Total keys: %d", newKey.MaskedKey, newKey.Provider, len(r.keys))
 
+	// Persist new key in Database
+	if db.DB != nil {
+		saveCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		if err := db.DB.CreateUpstreamKey(saveCtx, newKey); err != nil {
+			log.Printf("[Rotator] ⚠️ Error persisting Upstream Key to DB: %v", err)
+		} else {
+			log.Printf("[Rotator] 💾 Saved Upstream Key [%s] %s to persistent storage", newKey.Name, newKey.MaskedKey)
+		}
+		cancel()
+	}
+
 	copyKey := *newKey
 	copyKey.Key = "" // Wipe raw key in return
 	return &copyKey, nil
@@ -293,9 +320,11 @@ func (r *KeyRotator) RemoveKey(id string) error {
 	defer r.mu.Unlock()
 
 	idx := -1
+	targetID := id
 	for i, k := range r.keys {
-		if k.ID == id {
+		if k.ID == id || fmt.Sprintf("%d", i+1) == id {
 			idx = i
+			targetID = k.ID
 			break
 		}
 	}
@@ -303,8 +332,21 @@ func (r *KeyRotator) RemoveKey(id string) error {
 		return fmt.Errorf("không tìm thấy key với ID: %s", id)
 	}
 
+	deletedKey := r.keys[idx]
 	r.keys = append(r.keys[:idx], r.keys[idx+1:]...)
-	log.Printf("[Rotator] 🗑️ Removed Upstream Key ID %s from pool. Remaining: %d", id, len(r.keys))
+	log.Printf("[Rotator] 🗑️ Removed Upstream Key ID %s (%s) from pool. Remaining: %d", targetID, deletedKey.MaskedKey, len(r.keys))
+
+	// Permanently remove from DB
+	if db.DB != nil {
+		delCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		if err := db.DB.DeleteUpstreamKey(delCtx, targetID); err != nil {
+			log.Printf("[Rotator] ⚠️ Error deleting Upstream Key from DB: %v", err)
+		} else {
+			log.Printf("[Rotator] 💾 Permanently deleted Upstream Key %s from persistent storage", targetID)
+		}
+		cancel()
+	}
+
 	return nil
 }
 
@@ -313,9 +355,19 @@ func (r *KeyRotator) ToggleKey(id string, active bool) (*UpstreamKey, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	for _, k := range r.keys {
-		if k.ID == id {
+	for i, k := range r.keys {
+		if k.ID == id || fmt.Sprintf("%d", i+1) == id {
 			k.IsActive = active
+
+			// Update in DB
+			if db.DB != nil {
+				upCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				if err := db.DB.UpdateUpstreamKey(upCtx, k); err != nil {
+					log.Printf("[Rotator] ⚠️ Error updating Upstream Key in DB: %v", err)
+				}
+				cancel()
+			}
+
 			copyKey := *k
 			copyKey.Key = ""
 			return &copyKey, nil

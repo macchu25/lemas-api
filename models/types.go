@@ -49,6 +49,35 @@ type ApiKey struct {
 	CreatedAt   time.Time  `json:"created_at" bson:"created_at"`
 }
 
+type UpstreamKey struct {
+	ID             string    `json:"id" bson:"_id,omitempty"`
+	Key            string    `json:"-" bson:"key"` // Raw secret key, NEVER serialized into JSON response!
+	MaskedKey      string    `json:"key_masked" bson:"key_masked"`
+	Name           string    `json:"name" bson:"name"`
+	Provider       string    `json:"provider" bson:"provider"`
+	BaseURL        string    `json:"base_url,omitempty" bson:"base_url,omitempty"`
+	RequestCount   uint64    `json:"request_count" bson:"request_count"`
+	ErrorCount     uint64    `json:"error_count" bson:"error_count"`
+	IsActive       bool      `json:"is_active" bson:"is_active"`
+	LastUsed       time.Time `json:"last_used" bson:"last_used"`
+	LastError      string    `json:"last_error,omitempty" bson:"last_error,omitempty"`
+	LastStatusCode int       `json:"last_status_code,omitempty" bson:"last_status_code,omitempty"`
+	LastChecked    time.Time `json:"last_checked" bson:"last_checked"`
+	AddedAt        time.Time `json:"added_at" bson:"added_at"`
+}
+
+type IntermediateQR struct {
+	ID              string    `json:"id" bson:"_id,omitempty"` // Short slug e.g. "x8k2"
+	OriginalPayload string    `json:"original_payload" bson:"original_payload"`
+	ShortURL        string    `json:"short_url" bson:"short_url"`
+	IsURL           bool      `json:"is_url" bson:"is_url"`
+	OriginalModules int       `json:"original_modules" bson:"original_modules"`
+	ReducedModules  int       `json:"reduced_modules" bson:"reduced_modules"`
+	ReductionPct    float64   `json:"reduction_pct" bson:"reduction_pct"`
+	Hits            int64     `json:"hits" bson:"hits"`
+	CreatedAt       time.Time `json:"created_at" bson:"created_at"`
+}
+
 type ModelItem struct {
 	ID                 string   `json:"id" bson:"_id,omitempty"`
 	Name               string   `json:"name" bson:"name"`
