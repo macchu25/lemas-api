@@ -86,11 +86,6 @@ func main() {
 	mux.HandleFunc("/api/art-qr/isolate-transparent", handlers.QRRemoveBackgroundHandler)
 	mux.HandleFunc("/api/art-qr/sample-qr", handlers.SampleQRGenerateHandler)
 
-	// Intermediate QR Code Engine (Lowest Module Count Redirection)
-	mux.HandleFunc("/api/art-qr/intermediate", handlers.CreateIntermediateQRHandler)
-	mux.HandleFunc("/api/r/resolve", handlers.ResolveIntermediateQRHandler)
-	mux.HandleFunc("/r/", handlers.RedirectIntermediateQRHandler)
-
 	// Modular Art QR Pipeline Endpoints
 	mux.HandleFunc("/api/art-qr/generate", handlers.GenerateArtQRHandler)
 	mux.HandleFunc("/api/art-qr/analyze-style", handlers.AnalyzeStyleHandler)

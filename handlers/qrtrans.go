@@ -11,7 +11,6 @@ import (
 	_ "image/png"
 	"io"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 
@@ -42,9 +41,8 @@ type QRTransResponse struct {
 	ThresholdUsed   uint8        `json:"thresholdUsed,omitempty"`
 	Retries         int          `json:"retries,omitempty"`
 	ExecutionTimeMs float64      `json:"executionTimeMs,omitempty"`
-	DataURL         string                  `json:"dataUrl,omitempty"`
-	QRBounds        *BoundingBox            `json:"qrBounds,omitempty"`
-	Intermediate    *IntermediateQRResponse `json:"intermediate,omitempty"`
+	DataURL         string       `json:"dataUrl,omitempty"`
+	QRBounds        *BoundingBox `json:"qrBounds,omitempty"`
 }
 
 type QRTransJSONRequest struct {
@@ -187,33 +185,10 @@ func QRRemoveBackgroundHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Automatically generate intermediate minimal-module QR code if payload decoded
-	payload := result.OutputPayload
-	if payload == "" {
-		payload = result.InputPayload
-	}
-	if payload == "" && len(fileBytes) > 0 {
+	if resp.OutputPayload == "" && len(fileBytes) > 0 {
 		if decoded, decErr := qr.DecodeQRCode(fileBytes); decErr == nil && decoded != nil && decoded.Payload != "" {
-			payload = decoded.Payload
 			resp.OutputPayload = decoded.Payload
 			resp.QRValid = true
-		}
-	}
-	if payload != "" {
-		baseURL := os.Getenv("INTERMEDIATE_BASE_URL")
-		if baseURL == "" {
-			scheme := "http"
-			if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
-				scheme = "https"
-			}
-			host := r.Host
-			if host == "" {
-				host = "localhost:8080"
-			}
-			baseURL = fmt.Sprintf("%s://%s", scheme, host)
-		}
-		if inter, err := GenerateIntermediateQR(r.Context(), payload, baseURL); err == nil {
-			resp.Intermediate = inter
 		}
 	}
 
