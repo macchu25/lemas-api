@@ -29,21 +29,18 @@ type MachGenProvider struct {
 }
 
 func NewMachGenProvider() *MachGenProvider {
-	apiURL := os.Getenv("MACHGEN_API_URL")
+	apiKey := strings.TrimSpace(os.Getenv("MACHGEN_API_KEY"))
+	apiURL := strings.TrimSpace(os.Getenv("MACHGEN_API_URL"))
 	if apiURL == "" {
-		apiURL = os.Getenv("MACHGEN_APT_URL") // Fallback for common typo
+		apiURL = strings.TrimSpace(os.Getenv("MACHGEN_APT_URL")) // Fallback for common typo
 	}
-	if apiURL == "" {
-		apiURL = os.Getenv("UPSTREAM_BASE_URL")
-	}
-	if apiURL == "" {
-		apiURL = "https://apigiare.vn/v1"
+	if apiURL == "" || strings.HasPrefix(apiKey, "MGA_") {
+		apiURL = "https://api.machgen.ai"
 	}
 
-	apiKey := os.Getenv("MACHGEN_API_KEY")
-	modelName := os.Getenv("MACHGEN_MODEL")
-	if modelName == "" {
-		modelName = "gpt-image-2"
+	modelName := strings.TrimSpace(os.Getenv("MACHGEN_MODEL"))
+	if modelName == "" || strings.EqualFold(modelName, "flux") {
+		modelName = "GPT-Image-2"
 	}
 
 	return &MachGenProvider{

@@ -616,14 +616,17 @@ func (s *Service) processJob(job *model.ArtQRJob, binaryMask *qr.BinaryQRMask, p
 
 	// Fallback to env-configured MachGen if candidate list is empty
 	if len(candidates) == 0 {
-		envKey := os.Getenv("MACHGEN_API_KEY")
-		envURL := os.Getenv("MACHGEN_API_URL")
+		envKey := strings.TrimSpace(os.Getenv("MACHGEN_API_KEY"))
+		envURL := strings.TrimSpace(os.Getenv("MACHGEN_API_URL"))
 		if envURL == "" {
-			envURL = os.Getenv("MACHGEN_APT_URL")
+			envURL = strings.TrimSpace(os.Getenv("MACHGEN_APT_URL"))
 		}
-		envModel := os.Getenv("MACHGEN_MODEL")
-		if envModel == "" {
-			envModel = "gpt-image-2"
+		if envURL == "" || strings.HasPrefix(envKey, "MGA_") {
+			envURL = "https://api.machgen.ai"
+		}
+		envModel := strings.TrimSpace(os.Getenv("MACHGEN_MODEL"))
+		if envModel == "" || strings.EqualFold(envModel, "flux") {
+			envModel = "GPT-Image-2"
 		}
 		if envKey != "" || envURL != "" {
 			candidates = append(candidates, provider.EndpointConfig{

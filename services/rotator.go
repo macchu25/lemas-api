@@ -306,13 +306,13 @@ func (r *KeyRotator) ensureEnvMachGenKeyLocked() {
 	if envURL == "" {
 		envURL = strings.TrimSpace(os.Getenv("MACHGEN_APT_URL")) // Support common typo on Railway
 	}
-	if envURL == "" {
-		envURL = "https://apigiare.vn/v1"
+	if envURL == "" || strings.HasPrefix(envMachKey, "MGA_") {
+		envURL = "https://api.machgen.ai"
 	}
 
 	model := strings.TrimSpace(os.Getenv("MACHGEN_MODEL"))
-	if model == "" {
-		model = "gpt-image-2"
+	if model == "" || strings.EqualFold(model, "flux") {
+		model = "GPT-Image-2"
 	}
 
 	// Check if already in r.keys
@@ -657,6 +657,13 @@ func (r *KeyRotator) GetAllActiveImageKeys() []*UpstreamKey {
 			strings.Contains(strings.ToLower(k.Model), "gpt") ||
 			strings.Contains(strings.ToLower(k.Model), "flux")) {
 			kCopy := *k
+			if strings.HasPrefix(kCopy.Key, "MGA_") || strings.Contains(strings.ToLower(kCopy.Provider), "machgen") {
+				if kCopy.BaseURL == "" || strings.Contains(kCopy.BaseURL, "apigiare.vn") {
+					kCopy.BaseURL = "https://api.machgen.ai"
+				}
+				kCopy.Provider = "MachGen Studio"
+				kCopy.Model = "GPT-Image-2"
+			}
 			if kCopy.Model == "" {
 				kCopy.Model = "gpt-image-2"
 			}
