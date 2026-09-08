@@ -12,8 +12,10 @@ import (
 	"strings"
 	"time"
 
+	"xkiro-backend/db"
 	"xkiro-backend/internal/artqr"
 	"xkiro-backend/internal/artqr/model"
+	"xkiro-backend/models"
 )
 
 var defaultArtQRService = artqr.NewService()
@@ -400,6 +402,25 @@ func AdminUploadSceneHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Persist uploaded asset directly to MongoDB Atlas so it is never lost across container restarts/redeployments
+	contentType := "image/jpeg"
+	if ext == ".png" {
+		contentType = "image/png"
+	} else if ext == ".webp" {
+		contentType = "image/webp"
+	}
+	if db.DB != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		_ = db.DB.SaveArtQRAsset(ctx, &models.ArtQRAsset{
+			Filename:    fileName,
+			ContentType: contentType,
+			Data:        data,
+			Size:        int64(len(data)),
+			CreatedAt:   time.Now(),
+		})
+		cancel()
+	}
+
 	// Also copy to client public/presets directory if accessible
 	clientPresetsDir := filepath.Join("..", "client", "public", "presets")
 	if _, statErr := os.Stat(clientPresetsDir); statErr == nil {
@@ -415,5 +436,59 @@ func AdminUploadSceneHandler(w http.ResponseWriter, r *http.Request) {
 		"filename": fileName,
 		"size":     len(data),
 	})
+}
+
+// PresetAssetHandler serves preset images from local assets or retrieves from MongoDB Atlas
+func PresetAssetHandler(w http.ResponseWriter, r *http.Request) {
+	filename := strings.TrimPrefix(r.URL.Path, "/presets/")
+	filename = strings.TrimPrefix(filename, "/")
+	if filename == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	// 1. Try local disk assets
+	localPath := filepath.Join("assets", filename)
+	if info, err := os.Stat(localPath); err == nil && !info.IsDir() {
+		http.ServeFile(w, r, localPath)
+		return
+	}
+
+	// Also check client public/presets
+	clientPath := filepath.Join("..", "client", "public", "presets", filename)
+	if info, err := os.Stat(clientPath); err == nil && !info.IsDir() {
+		http.ServeFile(w, r, clientPath)
+		return
+	}
+
+	// 2. Try MongoDB Atlas collection artqr_assets
+	if db.DB != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		asset, err := db.DB.GetArtQRAsset(ctx, filename)
+		cancel()
+		if err == nil && asset != nil && len(asset.Data) > 0 {
+			// Cache to disk
+			_ = os.MkdirAll("assets", 0755)
+			_ = os.WriteFile(localPath, asset.Data, 0644)
+
+			ct := asset.ContentType
+			if ct == "" {
+				if strings.HasSuffix(filename, ".png") {
+					ct = "image/png"
+				} else if strings.HasSuffix(filename, ".webp") {
+					ct = "image/webp"
+				} else {
+					ct = "image/jpeg"
+				}
+			}
+			w.Header().Set("Content-Type", ct)
+			w.Header().Set("Content-Length", strconv.Itoa(len(asset.Data)))
+			w.Header().Set("Cache-Control", "public, max-age=86400")
+			_, _ = w.Write(asset.Data)
+			return
+		}
+	}
+
+	http.NotFound(w, r)
 }
 

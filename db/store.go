@@ -90,6 +90,14 @@ type Store interface {
 	GetIntermediateQR(ctx context.Context, id string) (*models.IntermediateQR, error)
 	IncrementIntermediateQRHits(ctx context.Context, id string) error
 
+	// Art QR Presets & Uploaded Assets (MongoDB Atlas Persistence)
+	SaveArtQRPreset(ctx context.Context, p *models.ArtQRPreset) error
+	GetAllArtQRPresets(ctx context.Context) ([]models.ArtQRPreset, error)
+	GetArtQRPresetByID(ctx context.Context, id string) (*models.ArtQRPreset, error)
+	DeleteArtQRPreset(ctx context.Context, id string) error
+	SaveArtQRAsset(ctx context.Context, asset *models.ArtQRAsset) error
+	GetArtQRAsset(ctx context.Context, filename string) (*models.ArtQRAsset, error)
+
 	// Admin
 	GetAllUsers(ctx context.Context) ([]models.User, error)
 	GetAllApiKeys(ctx context.Context) ([]models.ApiKey, error)
@@ -106,19 +114,21 @@ type MongoStore struct {
 
 // MemoryStore implementation for instant local fallback
 type MemoryStore struct {
-	mu           sync.RWMutex
-	users        map[string]*models.User
-	apiKeys      map[string]*models.ApiKey
-	modelsList   []models.ModelItem
-	pricingTiers []models.PricingTier
-	deals        []models.Deal
-	status       []models.StatusService
-	messages     []models.ContactMessage
-	usageLogs    []models.UsageLog
-	topupTxs     []models.TopupTransaction
+	mu              sync.RWMutex
+	users           map[string]*models.User
+	apiKeys         map[string]*models.ApiKey
+	modelsList      []models.ModelItem
+	pricingTiers    []models.PricingTier
+	deals           []models.Deal
+	status          []models.StatusService
+	messages        []models.ContactMessage
+	usageLogs       []models.UsageLog
+	topupTxs        []models.TopupTransaction
 	giftcodes       map[string]*models.Giftcode
 	upstreamKeys    map[string]*models.UpstreamKey
 	intermediateQRs map[string]*models.IntermediateQR
+	artqrPresets    map[string]models.ArtQRPreset
+	artqrAssets     map[string]models.ArtQRAsset
 }
 
 func loadEnvFile() {
@@ -180,6 +190,8 @@ func InitDB() Store {
 		giftcodes:       make(map[string]*models.Giftcode),
 		upstreamKeys:    make(map[string]*models.UpstreamKey),
 		intermediateQRs: make(map[string]*models.IntermediateQR),
+		artqrPresets:    make(map[string]models.ArtQRPreset),
+		artqrAssets:     make(map[string]models.ArtQRAsset),
 	}
 	DB = memStore
 	SeedData(memStore)
@@ -633,6 +645,63 @@ func (m *MemoryStore) IncrementIntermediateQRHits(ctx context.Context, id string
 		return nil
 	}
 	return fmt.Errorf("intermediate qr not found: %s", id)
+}
+
+func (m *MemoryStore) SaveArtQRPreset(ctx context.Context, p *models.ArtQRPreset) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.artqrPresets == nil {
+		m.artqrPresets = make(map[string]models.ArtQRPreset)
+	}
+	m.artqrPresets[p.ID] = *p
+	return nil
+}
+
+func (m *MemoryStore) GetAllArtQRPresets(ctx context.Context) ([]models.ArtQRPreset, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	list := make([]models.ArtQRPreset, 0, len(m.artqrPresets))
+	for _, p := range m.artqrPresets {
+		list = append(list, p)
+	}
+	return list, nil
+}
+
+func (m *MemoryStore) GetArtQRPresetByID(ctx context.Context, id string) (*models.ArtQRPreset, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if p, ok := m.artqrPresets[id]; ok {
+		copyPreset := p
+		return &copyPreset, nil
+	}
+	return nil, fmt.Errorf("artqr preset not found: %s", id)
+}
+
+func (m *MemoryStore) DeleteArtQRPreset(ctx context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.artqrPresets, id)
+	return nil
+}
+
+func (m *MemoryStore) SaveArtQRAsset(ctx context.Context, asset *models.ArtQRAsset) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.artqrAssets == nil {
+		m.artqrAssets = make(map[string]models.ArtQRAsset)
+	}
+	m.artqrAssets[asset.Filename] = *asset
+	return nil
+}
+
+func (m *MemoryStore) GetArtQRAsset(ctx context.Context, filename string) (*models.ArtQRAsset, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if asset, ok := m.artqrAssets[filename]; ok {
+		copyAsset := asset
+		return &copyAsset, nil
+	}
+	return nil, fmt.Errorf("artqr asset not found: %s", filename)
 }
 
 // ================= MongoStore Methods =================
@@ -1122,6 +1191,58 @@ func (ms *MongoStore) IncrementIntermediateQRHits(ctx context.Context, id string
 		"$inc": bson.M{"hits": 1},
 	})
 	return err
+}
+
+func (ms *MongoStore) SaveArtQRPreset(ctx context.Context, p *models.ArtQRPreset) error {
+	coll := ms.database.Collection("artqr_presets")
+	_, err := coll.ReplaceOne(ctx, bson.M{"_id": p.ID}, p, options.Replace().SetUpsert(true))
+	return err
+}
+
+func (ms *MongoStore) GetAllArtQRPresets(ctx context.Context) ([]models.ArtQRPreset, error) {
+	coll := ms.database.Collection("artqr_presets")
+	cur, err := coll.Find(ctx, bson.M{})
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var list []models.ArtQRPreset
+	if err := cur.All(ctx, &list); err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+func (ms *MongoStore) GetArtQRPresetByID(ctx context.Context, id string) (*models.ArtQRPreset, error) {
+	coll := ms.database.Collection("artqr_presets")
+	var p models.ArtQRPreset
+	err := coll.FindOne(ctx, bson.M{"_id": id}).Decode(&p)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+func (ms *MongoStore) DeleteArtQRPreset(ctx context.Context, id string) error {
+	coll := ms.database.Collection("artqr_presets")
+	_, err := coll.DeleteOne(ctx, bson.M{"_id": id})
+	return err
+}
+
+func (ms *MongoStore) SaveArtQRAsset(ctx context.Context, asset *models.ArtQRAsset) error {
+	coll := ms.database.Collection("artqr_assets")
+	_, err := coll.ReplaceOne(ctx, bson.M{"_id": asset.Filename}, asset, options.Replace().SetUpsert(true))
+	return err
+}
+
+func (ms *MongoStore) GetArtQRAsset(ctx context.Context, filename string) (*models.ArtQRAsset, error) {
+	coll := ms.database.Collection("artqr_assets")
+	var asset models.ArtQRAsset
+	err := coll.FindOne(ctx, bson.M{"_id": filename}).Decode(&asset)
+	if err != nil {
+		return nil, err
+	}
+	return &asset, nil
 }
 
 

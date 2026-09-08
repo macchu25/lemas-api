@@ -96,7 +96,7 @@ func main() {
 	mux.HandleFunc("/api/art-qr/admin/presets/", handlers.AdminArtQRPresetsHandler)
 	mux.HandleFunc("/api/art-qr/admin/presets", handlers.AdminArtQRPresetsHandler)
 	mux.HandleFunc("/api/art-qr/admin/upload-scene", handlers.AdminUploadSceneHandler)
-	mux.Handle("/presets/", http.StripPrefix("/presets/", http.FileServer(http.Dir("assets"))))
+	mux.HandleFunc("/presets/", handlers.PresetAssetHandler)
 
 	// User Giftcode Redemption & Daily Image Quota
 	mux.HandleFunc("/api/user/giftcode/redeem", handlers.AuthMiddleware(handlers.RedeemGiftcodeHandler))

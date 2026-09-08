@@ -23,6 +23,7 @@ import (
 	_ "golang.org/x/image/webp"
 
 	"github.com/google/uuid"
+	"xkiro-backend/db"
 	"xkiro-backend/internal/artqr/compositor"
 	"xkiro-backend/internal/artqr/model"
 	"xkiro-backend/internal/artqr/prompt"
@@ -108,24 +109,69 @@ func (s *Service) savePresets() {
 }
 
 func (s *Service) loadPresets() {
-	data, err := os.ReadFile(presetsPersistenceFile)
-	if err != nil {
-		return
-	}
-	var loaded []model.ArtQRPreset
-	if err := json.Unmarshal(data, &loaded); err != nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, pr := range loaded {
-		s.presets[pr.ID] = pr
-		if pr.Slug != "" {
-			s.presets[pr.Slug] = pr
+	// 1. Primary: Attempt loading presets from MongoDB Atlas
+	if db.DB != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		dbPresets, err := db.DB.GetAllArtQRPresets(ctx)
+		cancel()
+		if err == nil && len(dbPresets) > 0 {
+			s.mu.Lock()
+			s.presetsOrder = make([]string, 0, len(dbPresets))
+			for _, pr := range dbPresets {
+				s.presets[pr.ID] = pr
+				if pr.Slug != "" {
+					s.presets[pr.Slug] = pr
+				}
+				s.presetsOrder = append(s.presetsOrder, pr.ID)
+			}
+			s.mu.Unlock()
+			log.Printf("[ArtQR] Successfully restored %d presets from MongoDB Atlas Cluster", len(dbPresets))
+			return
 		}
-		s.presetsOrder = append(s.presetsOrder, pr.ID)
 	}
-	log.Printf("[ArtQR] Restored %d presets from %s", len(loaded), presetsPersistenceFile)
+
+	// 2. Secondary: Fallback to local presetsPersistenceFile
+	data, err := os.ReadFile(presetsPersistenceFile)
+	if err == nil {
+		var loaded []model.ArtQRPreset
+		if err := json.Unmarshal(data, &loaded); err == nil && len(loaded) > 0 {
+			s.mu.Lock()
+			s.presetsOrder = make([]string, 0, len(loaded))
+			for _, pr := range loaded {
+				s.presets[pr.ID] = pr
+				if pr.Slug != "" {
+					s.presets[pr.Slug] = pr
+				}
+				s.presetsOrder = append(s.presetsOrder, pr.ID)
+			}
+			s.mu.Unlock()
+			log.Printf("[ArtQR] Restored %d presets from %s", len(loaded), presetsPersistenceFile)
+
+			// Sync loaded presets to MongoDB if DB is online
+			if db.DB != nil {
+				go func(toSync []model.ArtQRPreset) {
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					for _, pr := range toSync {
+						_ = db.DB.SaveArtQRPreset(ctx, &pr)
+					}
+				}(loaded)
+			}
+			return
+		}
+	}
+
+	// 3. Fallback: Seed built-in default presets to MongoDB
+	if db.DB != nil {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			for _, pr := range prompt.DefaultPresets {
+				_ = db.DB.SaveArtQRPreset(ctx, &pr)
+			}
+			log.Printf("[ArtQR] Seeded %d default presets to MongoDB Atlas", len(prompt.DefaultPresets))
+		}()
+	}
 }
 
 func NewService() *Service {
@@ -222,6 +268,20 @@ func (s *Service) CreateOrUpdatePreset(p model.ArtQRPreset) error {
 	s.mu.Unlock()
 
 	s.savePresets()
+
+	// Persist preset directly to MongoDB Atlas
+	if db.DB != nil {
+		go func(toSave model.ArtQRPreset) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := db.DB.SaveArtQRPreset(ctx, &toSave); err != nil {
+				log.Printf("[ArtQR] Warning: Failed to save preset %s to MongoDB: %v", toSave.ID, err)
+			} else {
+				log.Printf("[ArtQR] Preset %s (%q) successfully saved to MongoDB Atlas Cluster", toSave.ID, toSave.Name)
+			}
+		}(p)
+	}
+
 	log.Printf("[ArtQR] Preset saved: ID=%s, Name=%q, Price=%d credits", p.ID, p.Name, p.PriceCredits)
 	return nil
 }
@@ -239,6 +299,20 @@ func (s *Service) DeletePreset(id string) error {
 	s.mu.Unlock()
 
 	s.savePresets()
+
+	// Delete from MongoDB Atlas
+	if db.DB != nil {
+		go func(delID string) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := db.DB.DeleteArtQRPreset(ctx, delID); err != nil {
+				log.Printf("[ArtQR] Warning: Failed to delete preset %s from MongoDB: %v", delID, err)
+			} else {
+				log.Printf("[ArtQR] Preset %s deleted from MongoDB Atlas Cluster", delID)
+			}
+		}(id)
+	}
+
 	log.Printf("[ArtQR] Preset deleted: ID=%s", id)
 	return nil
 }
@@ -307,10 +381,41 @@ func (s *Service) loadPresetSceneImage(preset *model.ArtQRPreset) []byte {
 				return data
 			}
 		}
+
+		// 1b. Check MongoDB Atlas if file is not on local container disk
+		if db.DB != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			asset, err := db.DB.GetArtQRAsset(ctx, filename)
+			cancel()
+			if err == nil && asset != nil && len(asset.Data) > 0 {
+				log.Printf("[ArtQR] Loaded custom scene image %q directly from MongoDB Atlas (%d bytes)", filename, len(asset.Data))
+				// Cache to local assets folder
+				_ = os.MkdirAll("assets", 0755)
+				_ = os.WriteFile(filepath.Join("assets", filename), asset.Data, 0644)
+				return asset.Data
+			}
+		}
 	}
 
 	// 2. Remote URL fallback (HTTP/HTTPS)
 	if strings.HasPrefix(refURL, "http://") || strings.HasPrefix(refURL, "https://") {
+		// If the remote URL contains /presets/<filename>, check MongoDB first
+		if idx := strings.Index(refURL, "/presets/"); idx != -1 {
+			filename := refURL[idx+len("/presets/"):]
+			if qIdx := strings.Index(filename, "?"); qIdx != -1 {
+				filename = filename[:qIdx]
+			}
+			if db.DB != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				asset, err := db.DB.GetArtQRAsset(ctx, filename)
+				cancel()
+				if err == nil && asset != nil && len(asset.Data) > 0 {
+					log.Printf("[ArtQR] Loaded remote-referenced scene %q directly from MongoDB Atlas (%d bytes)", filename, len(asset.Data))
+					return asset.Data
+				}
+			}
+		}
+
 		client := &http.Client{Timeout: 10 * time.Second}
 		if resp, err := client.Get(refURL); err == nil && resp.StatusCode == http.StatusOK {
 			defer resp.Body.Close()
