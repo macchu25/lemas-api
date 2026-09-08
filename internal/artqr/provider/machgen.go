@@ -152,9 +152,9 @@ func (m *MachGenProvider) GenerateWithTwoReferences(
 			log.Printf("[MachGen] Dual-reference synthesis completed in %v", time.Since(start))
 			return result, nil
 		}
-		log.Printf("[MachGen] Direct API endpoint call failed (%v), falling back to URL pipeline", err)
-		if strings.Contains(strings.ToLower(m.baseURL), "machgen.ai") {
-			return nil, fmt.Errorf("MachGen GPT Image 2 edit failed: %w", err)
+		log.Printf("[MachGen] Direct API endpoint call failed: %v", err)
+		if m.apiKey != "" || !strings.Contains(m.baseURL, "pollinations") {
+			return nil, fmt.Errorf("API MachGen (%s) thất bại: %w", m.baseURL, err)
 		}
 	}
 

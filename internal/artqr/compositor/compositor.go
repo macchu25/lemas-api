@@ -84,30 +84,33 @@ func RestoreAndComposite(
 	targetW := binaryMask.Width
 	targetH := binaryMask.Height
 
-	// 1. Decode base scene (Canvas foundation)
+	// 1. Determine canvas foundation:
+	// If MachGen generated an artistic image (machgenOutputBytes), use it as the primary canvas!
+	// This ensures the AI's lighting, texture, and blended scene form the actual image,
+	// rather than discarding the AI image and using a raw static photo.
 	var canvas *image.RGBA
-	if len(baseSceneBytes) > 0 {
-		baseImg, _, err := image.Decode(bytes.NewReader(baseSceneBytes))
-		if err == nil {
-			canvas = scaleImage(baseImg, targetW, targetH)
-		}
-	}
-	if canvas == nil {
-		// Neutral warm canvas if no base scene
-		canvas = image.NewRGBA(image.Rect(0, 0, targetW, targetH))
-		draw.Draw(canvas, canvas.Bounds(), &image.Uniform{color.RGBA{R: 245, G: 235, B: 220, A: 255}}, image.Point{}, draw.Src)
-	}
-
-	// 2. Decode MachGen artistic output (Texture source)
 	var machgenImg image.Image
+
 	if len(machgenOutputBytes) > 0 {
 		mImg, _, err := image.Decode(bytes.NewReader(machgenOutputBytes))
 		if err == nil {
-			machgenImg = scaleImage(mImg, targetW, targetH)
+			canvas = scaleImage(mImg, targetW, targetH)
+			machgenImg = canvas
 		}
 	}
-	if machgenImg == nil {
-		// If MachGen was unavailable or empty, use the canvas itself as texture source
+
+	if canvas == nil && len(baseSceneBytes) > 0 {
+		baseImg, _, err := image.Decode(bytes.NewReader(baseSceneBytes))
+		if err == nil {
+			canvas = scaleImage(baseImg, targetW, targetH)
+			machgenImg = canvas
+		}
+	}
+
+	if canvas == nil {
+		// Neutral warm canvas if no images available
+		canvas = image.NewRGBA(image.Rect(0, 0, targetW, targetH))
+		draw.Draw(canvas, canvas.Bounds(), &image.Uniform{color.RGBA{R: 245, G: 235, B: 220, A: 255}}, image.Point{}, draw.Src)
 		machgenImg = canvas
 	}
 
@@ -219,9 +222,20 @@ func RestoreAndComposite(
 				continue
 			}
 
-			// Clean Quiet Zone outside QR matrix
+			// Quiet zone luminance lift (prevents dark background from bleeding into finder patterns while preserving texture)
 			if safety.CleanQuietZone && binaryMask.IsQuietZone(x, y) {
-				canvas.Set(x, y, color.RGBA{R: 255, G: 252, B: 245, A: 255})
+				cR, cG, cB, _ := canvas.At(x, y).RGBA()
+				cR8 := uint8(cR >> 8)
+				cG8 := uint8(cG >> 8)
+				cB8 := uint8(cB >> 8)
+				cLum := uint8((299*uint32(cR8) + 587*uint32(cG8) + 114*uint32(cB8)) / 1000)
+				if cLum < 195 {
+					liftFactor := float64(195-cLum) / 195.0 * 0.75
+					newR := clamp255(int(float64(cR8)*(1-liftFactor) + 250*liftFactor))
+					newG := clamp255(int(float64(cG8)*(1-liftFactor) + 245*liftFactor))
+					newB := clamp255(int(float64(cB8)*(1-liftFactor) + 230*liftFactor))
+					canvas.Set(x, y, color.RGBA{R: newR, G: newG, B: newB, A: 255})
+				}
 			}
 		}
 	}
