@@ -155,18 +155,32 @@ func SePayWebhookHandler(w http.ResponseWriter, r *http.Request) {
 	amountUSD := payload.TransferAmount / exchangeRate
 	amountUSD = float64(int(amountUSD*100)) / 100.0 // Round to 2 decimals
 
-	// Bonus tokens (e.g. 1000 tokens per $1 USD)
-	tokensAwarded := int64(amountUSD * 1000)
+	// 5. Detect Subscription Plan from Transfer Memo
+	// e.g. "LEMAS PRO 99A1BC", "LEMAS VIP 99A1BC", "LEMAS EXTRA 99A1BC"
+	var tokensAwarded int64
+	var activatedPlan string
 
-	// 5. Update User Balance & Plan in Database
+	if strings.Contains(memo, "EXTRA") || amountUSD >= 50.0 {
+		activatedPlan = "extra"
+		tokensAwarded = 800000
+	} else if strings.Contains(memo, "VIP") || amountUSD >= 25.0 {
+		activatedPlan = "vip"
+		tokensAwarded = 300000
+	} else if strings.Contains(memo, "PRO") || amountUSD >= 10.0 {
+		activatedPlan = "pro"
+		tokensAwarded = 100000
+	} else {
+		// A-la-carte topup: 1,000 tokens per $1 USD
+		tokensAwarded = int64(amountUSD * 1000)
+	}
+
+	// 6. Update User Balance, Plan & Tokens in Database
 	matchedUser.Balance += amountUSD
 	matchedUser.Tokens += tokensAwarded
-	matchedUser.UpdatedAt = time.Now()
-
-	// If topped up >= $10, automatically upgrade to Pro if currently free
-	if matchedUser.Balance >= 10.0 && (matchedUser.Plan == "" || matchedUser.Plan == "free") {
-		matchedUser.Plan = "pro"
+	if activatedPlan != "" {
+		matchedUser.Plan = activatedPlan
 	}
+	matchedUser.UpdatedAt = time.Now()
 
 	if err := db.DB.UpdateUser(ctx, matchedUser); err != nil {
 		log.Printf("[SePay Webhook] ❌ Error updating user balance in DB: %v", err)
