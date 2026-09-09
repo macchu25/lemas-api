@@ -103,6 +103,12 @@ type Store interface {
 	GetUserArtQRs(ctx context.Context, userID string) ([]models.UserArtQR, error)
 	DeleteUserArtQR(ctx context.Context, id, userID string) error
 
+	// User Chat Conversations
+	SaveChatConversation(ctx context.Context, c *models.ChatConversation) error
+	GetChatConversationsByUser(ctx context.Context, userID string) ([]models.ChatConversation, error)
+	GetChatConversationByID(ctx context.Context, id, userID string) (*models.ChatConversation, error)
+	DeleteChatConversation(ctx context.Context, id, userID string) error
+
 	// Admin
 	GetAllUsers(ctx context.Context) ([]models.User, error)
 	GetAllApiKeys(ctx context.Context) ([]models.ApiKey, error)
@@ -135,6 +141,7 @@ type MemoryStore struct {
 	artqrPresets    map[string]models.ArtQRPreset
 	artqrAssets     map[string]models.ArtQRAsset
 	userArtQRs      map[string]*models.UserArtQR
+	conversations   map[string]*models.ChatConversation
 }
 
 func loadEnvFile() {
@@ -199,6 +206,7 @@ func InitDB() Store {
 		artqrPresets:    make(map[string]models.ArtQRPreset),
 		artqrAssets:     make(map[string]models.ArtQRAsset),
 		userArtQRs:      make(map[string]*models.UserArtQR),
+		conversations:   make(map[string]*models.ChatConversation),
 	}
 	DB = memStore
 	SeedData(memStore)
@@ -748,6 +756,59 @@ func (m *MemoryStore) DeleteUserArtQR(ctx context.Context, id, userID string) er
 		return nil
 	}
 	return fmt.Errorf("artqr not found")
+}
+
+func (m *MemoryStore) SaveChatConversation(ctx context.Context, c *models.ChatConversation) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.conversations == nil {
+		m.conversations = make(map[string]*models.ChatConversation)
+	}
+	if c.CreatedAt.IsZero() {
+		c.CreatedAt = time.Now()
+	}
+	c.UpdatedAt = time.Now()
+	m.conversations[c.ID] = c
+	return nil
+}
+
+func (m *MemoryStore) GetChatConversationsByUser(ctx context.Context, userID string) ([]models.ChatConversation, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var list []models.ChatConversation
+	for _, c := range m.conversations {
+		if c.UserID == userID {
+			list = append(list, *c)
+		}
+	}
+	for i := 0; i < len(list)-1; i++ {
+		for j := i + 1; j < len(list); j++ {
+			if list[i].UpdatedAt.Before(list[j].UpdatedAt) {
+				list[i], list[j] = list[j], list[i]
+			}
+		}
+	}
+	return list, nil
+}
+
+func (m *MemoryStore) GetChatConversationByID(ctx context.Context, id, userID string) (*models.ChatConversation, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if c, ok := m.conversations[id]; ok && c.UserID == userID {
+		copy := *c
+		return &copy, nil
+	}
+	return nil, fmt.Errorf("conversation not found")
+}
+
+func (m *MemoryStore) DeleteChatConversation(ctx context.Context, id, userID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if c, ok := m.conversations[id]; ok && c.UserID == userID {
+		delete(m.conversations, id)
+		return nil
+	}
+	return fmt.Errorf("conversation not found")
 }
 
 // ================= MongoStore Methods =================
@@ -1317,6 +1378,48 @@ func (ms *MongoStore) DeleteUserArtQR(ctx context.Context, id, userID string) er
 	_, err := coll.DeleteOne(ctx, bson.M{"_id": id, "user_id": userID})
 	return err
 }
+
+func (ms *MongoStore) SaveChatConversation(ctx context.Context, c *models.ChatConversation) error {
+	coll := ms.database.Collection("chat_conversations")
+	if c.CreatedAt.IsZero() {
+		c.CreatedAt = time.Now()
+	}
+	c.UpdatedAt = time.Now()
+	_, err := coll.ReplaceOne(ctx, bson.M{"_id": c.ID, "user_id": c.UserID}, c, options.Replace().SetUpsert(true))
+	return err
+}
+
+func (ms *MongoStore) GetChatConversationsByUser(ctx context.Context, userID string) ([]models.ChatConversation, error) {
+	coll := ms.database.Collection("chat_conversations")
+	opts := options.Find().SetSort(bson.D{{Key: "updated_at", Value: -1}})
+	cur, err := coll.Find(ctx, bson.M{"user_id": userID}, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var list []models.ChatConversation
+	if err := cur.All(ctx, &list); err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+func (ms *MongoStore) GetChatConversationByID(ctx context.Context, id, userID string) (*models.ChatConversation, error) {
+	coll := ms.database.Collection("chat_conversations")
+	var c models.ChatConversation
+	err := coll.FindOne(ctx, bson.M{"_id": id, "user_id": userID}).Decode(&c)
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+func (ms *MongoStore) DeleteChatConversation(ctx context.Context, id, userID string) error {
+	coll := ms.database.Collection("chat_conversations")
+	_, err := coll.DeleteOne(ctx, bson.M{"_id": id, "user_id": userID})
+	return err
+}
+
 
 
 

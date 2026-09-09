@@ -270,3 +270,20 @@ type UserArtQR struct {
 	CostUSD         float64   `json:"cost_usd" bson:"cost_usd"`
 	CreatedAt       time.Time `json:"created_at" bson:"created_at"`
 }
+
+type ChatMessage struct {
+	ID        string    `json:"id" bson:"id"`
+	Role      string    `json:"role" bson:"role"` // "user", "assistant", "system"
+	Content   string    `json:"content" bson:"content"`
+	CreatedAt time.Time `json:"created_at" bson:"created_at"`
+}
+
+type ChatConversation struct {
+	ID        string        `json:"id" bson:"_id,omitempty"`
+	UserID    string        `json:"user_id" bson:"user_id"`
+	Title     string        `json:"title" bson:"title"`
+	Model     string        `json:"model" bson:"model"`
+	Messages  []ChatMessage `json:"messages" bson:"messages"`
+	CreatedAt time.Time     `json:"created_at" bson:"created_at"`
+	UpdatedAt time.Time     `json:"updated_at" bson:"updated_at"`
+}
