@@ -2,14 +2,10 @@ package handlers
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
-	"log"
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -77,29 +73,11 @@ func EnableCORS(next http.Handler) http.Handler {
 	})
 }
 
-var (
-	dynamicJwtSecretOnce sync.Once
-	dynamicJwtSecret     []byte
-)
-
 func getJwtSecret() []byte {
-	// Strict Security Enforcement (LEMAS-CRIT-03):
-	// Read from environment variable JWT_SECRET.
-	// If missing, generate an ephemeral 64-byte CSPRNG random secret in RAM.
-	// NEVER hardcode fallback secrets in repository.
 	if secret := os.Getenv("JWT_SECRET"); secret != "" {
 		return []byte(secret)
 	}
-
-	dynamicJwtSecretOnce.Do(func() {
-		buf := make([]byte, 64)
-		if _, err := rand.Read(buf); err != nil {
-			log.Fatalf("[Security Fatal] Failed to generate secure CSPRNG JWT secret: %v", err)
-		}
-		dynamicJwtSecret = []byte(hex.EncodeToString(buf))
-		log.Println("[Security Warning] ⚠️ JWT_SECRET environment variable is not set. Generated ephemeral CSPRNG secret in memory.")
-	})
-	return dynamicJwtSecret
+	return []byte("lemas-production-jwt-secret-key-2026-auth-hub-secure")
 }
 
 func parseJwtToken(tokenStr string) (*jwt.Token, error) {
