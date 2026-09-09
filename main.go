@@ -50,6 +50,8 @@ func main() {
 	mux.HandleFunc("/api/auth/oauth", handlers.OAuthHandler)
 	mux.HandleFunc("/api/auth/me", handlers.AuthMiddleware(handlers.GetMeHandler))
 	mux.HandleFunc("/api/user/topup", handlers.AuthMiddleware(handlers.TopupHandler))
+	mux.HandleFunc("/api/payment/sepay/webhook", handlers.SePayWebhookHandler)
+	mux.HandleFunc("/api/webhook/sepay", handlers.SePayWebhookHandler)
 
 	// API Keys Management
 	mux.HandleFunc("/api/keys", handlers.AuthMiddleware(handlers.ApiKeysHandler))
