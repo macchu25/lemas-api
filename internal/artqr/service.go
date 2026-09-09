@@ -31,6 +31,7 @@ import (
 	"xkiro-backend/internal/artqr/qr"
 	"xkiro-backend/internal/artqr/vision"
 	"xkiro-backend/internal/qrtrans"
+	"xkiro-backend/models"
 	"xkiro-backend/services"
 )
 
@@ -800,6 +801,25 @@ INPUT RULES:
 		})
 		job.UpdateStatus("completed", 100)
 		log.Printf("[ArtQR] [%s] Preview mode completed in %dms: raw AI image returned without QR overlay, validation, or retries", job.ID, job.ProcessingMs)
+		if job.UserID != "" && db.DB != nil {
+			presetName := preset.Name
+			if presetName == "" {
+				presetName = job.PresetID
+			}
+			_ = db.DB.SaveUserArtQR(context.Background(), &models.UserArtQR{
+				ID:              job.ID,
+				UserID:          job.UserID,
+				PresetID:        job.PresetID,
+				PresetName:      presetName,
+				CustomPrompt:    job.Prompt,
+				ImageURL:        dataURL,
+				OriginalPayload: job.OriginalPayload,
+				DecodedPayload:  "",
+				Scannable:       false,
+				CostUSD:         0.05,
+				CreatedAt:       time.Now(),
+			})
+		}
 		return
 	}
 
@@ -947,6 +967,27 @@ INPUT RULES:
 		job.UpdateStatus("completed", 100)
 		log.Printf("[ArtQR] [%s] Job SUCCEEDED in %dms (attempts=%d, payloadMatch=true)",
 			job.ID, job.ProcessingMs, job.Attempts)
+
+		// Persist to user's personal gallery in MongoDB
+		if job.UserID != "" && db.DB != nil {
+			presetName := preset.Name
+			if presetName == "" {
+				presetName = job.PresetID
+			}
+			_ = db.DB.SaveUserArtQR(context.Background(), &models.UserArtQR{
+				ID:              job.ID,
+				UserID:          job.UserID,
+				PresetID:        job.PresetID,
+				PresetName:      presetName,
+				CustomPrompt:    job.Prompt,
+				ImageURL:        b64Data,
+				OriginalPayload: job.OriginalPayload,
+				DecodedPayload:  decodedText,
+				Scannable:       true,
+				CostUSD:         0.05,
+				CreatedAt:       time.Now(),
+			})
+		}
 	} else {
 		job.SetError("Unable to generate a scanner-valid Art QR within retry budget")
 		log.Printf("[ArtQR] [%s] Job FAILED: Unable to generate scanner-valid QR after %d retries",

@@ -256,3 +256,17 @@ type ArtQRAsset struct {
 	Size        int64     `json:"size" bson:"size"`
 	CreatedAt   time.Time `json:"created_at" bson:"created_at"`
 }
+
+type UserArtQR struct {
+	ID              string    `json:"id" bson:"_id,omitempty"`
+	UserID          string    `json:"user_id" bson:"user_id"`
+	PresetID        string    `json:"preset_id" bson:"preset_id"`
+	PresetName      string    `json:"preset_name" bson:"preset_name"`
+	CustomPrompt    string    `json:"custom_prompt" bson:"custom_prompt"`
+	ImageURL        string    `json:"image_url" bson:"image_url"`
+	OriginalPayload string    `json:"original_payload" bson:"original_payload"`
+	DecodedPayload  string    `json:"decoded_payload" bson:"decoded_payload"`
+	Scannable       bool      `json:"scannable" bson:"scannable"`
+	CostUSD         float64   `json:"cost_usd" bson:"cost_usd"`
+	CreatedAt       time.Time `json:"created_at" bson:"created_at"`
+}

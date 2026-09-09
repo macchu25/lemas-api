@@ -109,6 +109,8 @@ func main() {
 	mux.HandleFunc("/api/user/image/consume", handlers.AuthMiddleware(handlers.ImageConsumeHandler))
 	mux.HandleFunc("/api/user/art-qr/jobs", handlers.AuthMiddleware(handlers.ArtQRJobsHandler))
 	mux.HandleFunc("/api/user/art-qr/status", handlers.AuthMiddleware(handlers.ArtQRStatusHandler))
+	mux.HandleFunc("/api/user/art-qr/history", handlers.AuthMiddleware(handlers.UserArtQRHistoryHandler))
+	mux.HandleFunc("/api/user/art-qr/history/", handlers.AuthMiddleware(handlers.UserArtQRHistoryHandler))
 
 	// Legacy Art QR handler (Graceful JSON response for cached browser clients)
 	legacyArtQRHandler := func(w http.ResponseWriter, r *http.Request) {

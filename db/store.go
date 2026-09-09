@@ -98,6 +98,11 @@ type Store interface {
 	SaveArtQRAsset(ctx context.Context, asset *models.ArtQRAsset) error
 	GetArtQRAsset(ctx context.Context, filename string) (*models.ArtQRAsset, error)
 
+	// User Art QR Gallery History
+	SaveUserArtQR(ctx context.Context, item *models.UserArtQR) error
+	GetUserArtQRs(ctx context.Context, userID string) ([]models.UserArtQR, error)
+	DeleteUserArtQR(ctx context.Context, id, userID string) error
+
 	// Admin
 	GetAllUsers(ctx context.Context) ([]models.User, error)
 	GetAllApiKeys(ctx context.Context) ([]models.ApiKey, error)
@@ -129,6 +134,7 @@ type MemoryStore struct {
 	intermediateQRs map[string]*models.IntermediateQR
 	artqrPresets    map[string]models.ArtQRPreset
 	artqrAssets     map[string]models.ArtQRAsset
+	userArtQRs      map[string]*models.UserArtQR
 }
 
 func loadEnvFile() {
@@ -192,6 +198,7 @@ func InitDB() Store {
 		intermediateQRs: make(map[string]*models.IntermediateQR),
 		artqrPresets:    make(map[string]models.ArtQRPreset),
 		artqrAssets:     make(map[string]models.ArtQRAsset),
+		userArtQRs:      make(map[string]*models.UserArtQR),
 	}
 	DB = memStore
 	SeedData(memStore)
@@ -702,6 +709,45 @@ func (m *MemoryStore) GetArtQRAsset(ctx context.Context, filename string) (*mode
 		return &copyAsset, nil
 	}
 	return nil, fmt.Errorf("artqr asset not found: %s", filename)
+}
+
+func (m *MemoryStore) SaveUserArtQR(ctx context.Context, item *models.UserArtQR) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.userArtQRs == nil {
+		m.userArtQRs = make(map[string]*models.UserArtQR)
+	}
+	m.userArtQRs[item.ID] = item
+	return nil
+}
+
+func (m *MemoryStore) GetUserArtQRs(ctx context.Context, userID string) ([]models.UserArtQR, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var list []models.UserArtQR
+	for _, item := range m.userArtQRs {
+		if item.UserID == userID {
+			list = append(list, *item)
+		}
+	}
+	for i := 0; i < len(list)-1; i++ {
+		for j := i + 1; j < len(list); j++ {
+			if list[i].CreatedAt.Before(list[j].CreatedAt) {
+				list[i], list[j] = list[j], list[i]
+			}
+		}
+	}
+	return list, nil
+}
+
+func (m *MemoryStore) DeleteUserArtQR(ctx context.Context, id, userID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if item, ok := m.userArtQRs[id]; ok && item.UserID == userID {
+		delete(m.userArtQRs, id)
+		return nil
+	}
+	return fmt.Errorf("artqr not found")
 }
 
 // ================= MongoStore Methods =================
@@ -1244,5 +1290,33 @@ func (ms *MongoStore) GetArtQRAsset(ctx context.Context, filename string) (*mode
 	}
 	return &asset, nil
 }
+
+func (ms *MongoStore) SaveUserArtQR(ctx context.Context, item *models.UserArtQR) error {
+	coll := ms.database.Collection("user_art_qrs")
+	_, err := coll.ReplaceOne(ctx, bson.M{"_id": item.ID}, item, options.Replace().SetUpsert(true))
+	return err
+}
+
+func (ms *MongoStore) GetUserArtQRs(ctx context.Context, userID string) ([]models.UserArtQR, error) {
+	coll := ms.database.Collection("user_art_qrs")
+	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}})
+	cur, err := coll.Find(ctx, bson.M{"user_id": userID}, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var list []models.UserArtQR
+	if err := cur.All(ctx, &list); err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+func (ms *MongoStore) DeleteUserArtQR(ctx context.Context, id, userID string) error {
+	coll := ms.database.Collection("user_art_qrs")
+	_, err := coll.DeleteOne(ctx, bson.M{"_id": id, "user_id": userID})
+	return err
+}
+
 
 

@@ -16,6 +16,9 @@ import (
 	"xkiro-backend/internal/artqr"
 	"xkiro-backend/internal/artqr/model"
 	"xkiro-backend/models"
+
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
 
 var defaultArtQRService = artqr.NewService()
@@ -127,8 +130,45 @@ func GenerateArtQRHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get User ID from context if available
+	// Get User ID from context or Authorization header
 	userID, _ := r.Context().Value(UserContextKey).(string)
+	if userID == "" {
+		authHeader := r.Header.Get("Authorization")
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
+			if token, err := parseJwtToken(tokenStr); err == nil && token.Valid {
+				if claims, ok := token.Claims.(jwt.MapClaims); ok {
+					if uID, ok := claims["user_id"].(string); ok {
+						userID = uID
+					}
+				}
+			}
+		}
+	}
+
+	// Quota & Balance Check
+	var userObj *models.User
+	if userID != "" && db.DB != nil {
+		if u, err := db.DB.GetUserByID(r.Context(), userID); err == nil && u != nil {
+			userObj = u
+		}
+	}
+
+	if userObj != nil {
+		isPaidPlan := userObj.Plan == "pro" || userObj.Plan == "vip" || userObj.Plan == "extra" || userObj.Plan == "pro-plus" || userObj.Plan == "max" || userObj.Plan == "ultra" || userObj.Plan == "power"
+		if !isPaidPlan {
+			if userObj.Balance < 0.05 && userObj.GiftTokens < 250 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusPaymentRequired)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"success": false,
+					"error":   "Số dư ví không đủ để tạo Art QR (Phí: $0.05/lần). Vui lòng nạp tiền vào tài khoản tại mục Nạp Tiền hoặc nâng cấp gói PRO/VIP!",
+					"code":    "insufficient_balance",
+				})
+				return
+			}
+		}
+	}
 
 	params := artqr.CreateJobParams{
 		UserID:         userID,
@@ -162,6 +202,47 @@ func GenerateArtQRHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
+
+		// Deduct balance upon successful generation
+		if userObj != nil {
+			isPaidPlan := userObj.Plan == "pro" || userObj.Plan == "vip" || userObj.Plan == "extra" || userObj.Plan == "pro-plus" || userObj.Plan == "max" || userObj.Plan == "ultra" || userObj.Plan == "power"
+			if !isPaidPlan {
+				if userObj.Balance >= 0.05 {
+					_ = db.DB.DeductUserBalanceAtomic(r.Context(), userObj.ID, 0.05)
+					_ = db.DB.CreateUsageLog(r.Context(), &models.UsageLog{
+						ID:           "log-" + uuid.New().String(),
+						UserID:       userObj.ID,
+						Model:        "art-qr-" + presetID,
+						PromptTokens: 100,
+						CompTokens:   200,
+						TotalTokens:  300,
+						CostUSD:      0.05,
+						LatencyMs:    int64(result.ProcessingMs),
+						Timestamp:    time.Now(),
+					})
+				} else if userObj.GiftTokens >= 250 {
+					_ = db.DB.ConsumeUserGiftTokens(r.Context(), userObj.ID, 250)
+				}
+			}
+
+			// Persist to user's personal gallery in MongoDB
+			if result.Success && result.Image != "" && db.DB != nil {
+				_ = db.DB.SaveUserArtQR(r.Context(), &models.UserArtQR{
+					ID:              "artqr-" + uuid.New().String(),
+					UserID:          userObj.ID,
+					PresetID:        presetID,
+					PresetName:      presetID,
+					CustomPrompt:    customPrompt,
+					ImageURL:        result.Image,
+					OriginalPayload: result.ExpectedPayload,
+					DecodedPayload:  result.DecodedPayload,
+					Scannable:       result.QRValid,
+					CostUSD:         0.05,
+					CreatedAt:       time.Now(),
+				})
+			}
+		}
+
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(result)
 		return
@@ -172,6 +253,29 @@ func GenerateArtQRHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		jsonError(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+
+	// Deduct balance for async job
+	if userObj != nil {
+		isPaidPlan := userObj.Plan == "pro" || userObj.Plan == "vip" || userObj.Plan == "extra" || userObj.Plan == "pro-plus" || userObj.Plan == "max" || userObj.Plan == "ultra" || userObj.Plan == "power"
+		if !isPaidPlan {
+			if userObj.Balance >= 0.05 {
+				_ = db.DB.DeductUserBalanceAtomic(r.Context(), userObj.ID, 0.05)
+				_ = db.DB.CreateUsageLog(r.Context(), &models.UsageLog{
+					ID:           "log-" + uuid.New().String(),
+					UserID:       userObj.ID,
+					Model:        "art-qr-" + presetID,
+					PromptTokens: 100,
+					CompTokens:   200,
+					TotalTokens:  300,
+					CostUSD:      0.05,
+					LatencyMs:    0,
+					Timestamp:    time.Now(),
+				})
+			} else if userObj.GiftTokens >= 250 {
+				_ = db.DB.ConsumeUserGiftTokens(r.Context(), userObj.ID, 250)
+			}
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -499,4 +603,45 @@ func PresetAssetHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.NotFound(w, r)
+}
+
+// UserArtQRHistoryHandler handles GET /api/user/art-qr/history and DELETE /api/user/art-qr/history/:id
+func UserArtQRHistoryHandler(w http.ResponseWriter, r *http.Request) {
+	userID, _ := r.Context().Value(UserContextKey).(string)
+	if userID == "" {
+		jsonError(w, "Chưa đăng nhập", http.StatusUnauthorized)
+		return
+	}
+
+	if r.Method == http.MethodGet {
+		items, err := db.DB.GetUserArtQRs(r.Context(), userID)
+		if err != nil || items == nil {
+			items = []models.UserArtQR{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"items":   items,
+		})
+		return
+	}
+
+	if r.Method == http.MethodDelete {
+		path := r.URL.Path
+		id := strings.TrimPrefix(path, "/api/user/art-qr/history/")
+		id = strings.TrimPrefix(id, "/api/user/art-qr/history")
+		id = strings.TrimPrefix(id, "/")
+		if id == "" {
+			jsonError(w, "Thiếu ID tác phẩm cần xóa", http.StatusBadRequest)
+			return
+		}
+		_ = db.DB.DeleteUserArtQR(r.Context(), id, userID)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+		})
+		return
+	}
+
+	jsonError(w, "Phương thức không được hỗ trợ", http.StatusMethodNotAllowed)
 }
