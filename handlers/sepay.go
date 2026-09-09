@@ -112,7 +112,8 @@ func SePayWebhookHandler(w http.ResponseWriter, r *http.Request) {
 			for _, u := range allUsers {
 				cleanID := strings.ToUpper(strings.ReplaceAll(u.ID, "user-", ""))
 				if strings.HasSuffix(cleanID, userCode) || strings.EqualFold(u.ID, userCode) || strings.EqualFold(u.Email, userCode) {
-					matchedUser = u
+					userCopy := u
+					matchedUser = &userCopy
 					matchedUserID = u.ID
 					break
 				}
@@ -130,7 +131,8 @@ func SePayWebhookHandler(w http.ResponseWriter, r *http.Request) {
 					cleanSuffix = cleanSuffix[len(cleanSuffix)-6:]
 				}
 				if strings.Contains(memo, cleanSuffix) {
-					matchedUser = u
+					userCopy := u
+					matchedUser = &userCopy
 					matchedUserID = u.ID
 					break
 				}
