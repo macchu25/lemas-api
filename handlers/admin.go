@@ -609,3 +609,54 @@ func AdminToggleUpstreamKeyHandler(w http.ResponseWriter, r *http.Request) {
 		"key":     updated,
 	})
 }
+
+// AdminPingDBHandler checks and measures live database connection status and latency
+// GET /api/admin/db/ping
+func AdminPingDBHandler(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	users, err := db.DB.GetAllUsers(ctx)
+	latency := time.Since(start).Milliseconds()
+
+	dbType := "In-Memory RAM Store (Local Fallback)"
+	mongoURI := os.Getenv("MONGO_URI")
+	isMongo := false
+	if mongoURI != "" {
+		isMongo = true
+		maskedURI := "mongodb+srv://***"
+		if parts := strings.Split(mongoURI, "@"); len(parts) > 1 {
+			maskedURI = "mongodb+srv://***@" + parts[1]
+		}
+		dbType = fmt.Sprintf("MongoDB Atlas Cloud (%s)", maskedURI)
+	}
+
+	keys, _ := db.DB.GetAllApiKeys(ctx)
+	modelsList, _ := db.DB.GetAllModels(ctx)
+	giftcodes, _ := db.DB.GetAllGiftcodes(ctx)
+	logs, _ := db.DB.GetAllUsageLogs(ctx)
+
+	status := "connected"
+	errMsg := ""
+	if err != nil {
+		status = "error"
+		errMsg = err.Error()
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":           status,
+		"latency_ms":       latency,
+		"db_type":          dbType,
+		"is_mongodb":       isMongo,
+		"users_count":      len(users),
+		"keys_count":       len(keys),
+		"models_count":     len(modelsList),
+		"giftcodes_count":  len(giftcodes),
+		"usage_logs_count": len(logs),
+		"timestamp":        time.Now().Format("2006-01-02 15:04:05"),
+		"error":            errMsg,
+	})
+}
+
