@@ -177,34 +177,49 @@ func (a *XKiroVisionAnalyzer) getCandidateEndpoints() []visionEndpoint {
 		}
 	}
 
-	// 1. Check services.DefaultRotator keys first (from Database & Admin Key Manager)
+	// 1. Check MachGen from env first (Top Priority for GPT-Image-2)
+	machKey := strings.TrimSpace(os.Getenv("MACHGEN_API_KEY"))
+	machURL := strings.TrimSpace(os.Getenv("MACHGEN_API_URL"))
+	if machURL == "" {
+		machURL = strings.TrimSpace(os.Getenv("MACHGEN_APT_URL"))
+	}
+	if machURL == "" || strings.HasPrefix(machKey, "MGA_") {
+		machURL = "https://api.machgen.ai"
+	}
+	if machKey != "" {
+		add(machURL, machKey, "gpt-image-2")
+		add(machURL, machKey, "GPT-Image-2")
+	}
+
+	// 2. Check services.DefaultRotator image & vision keys with gpt-image-2
 	if services.DefaultRotator != nil {
-		for _, k := range services.DefaultRotator.GetAllActiveVisionKeys() {
+		for _, k := range services.DefaultRotator.GetAllActiveImageKeys() {
 			m := k.Model
-			if m == "" || strings.EqualFold(m, "flux") || strings.Contains(strings.ToLower(m), "image") {
-				m = "gpt-4o"
+			if m == "" || strings.EqualFold(m, "flux") {
+				m = "gpt-image-2"
 			}
 			add(k.BaseURL, k.Key, m)
-			add(k.BaseURL, k.Key, "gpt-4o")
-			add(k.BaseURL, k.Key, "gpt-4o-mini")
+			add(k.BaseURL, k.Key, "gpt-image-2")
+		}
+		for _, k := range services.DefaultRotator.GetAllActiveVisionKeys() {
+			add(k.BaseURL, k.Key, "gpt-image-2")
+			add(k.BaseURL, k.Key, k.Model)
 		}
 	}
 
-	// 2. Check XKIRO_API_KEY / XKIRO_BASE_URL
+	// 3. Check XKIRO_API_KEY / XKIRO_BASE_URL
 	base := a.getBaseURL()
 	model := a.getModel()
 	if a.APIKey != "" {
 		add(base, a.APIKey, model)
-		add(base, a.APIKey, "gpt-4o")
-		add(base, a.APIKey, "gpt-4o-mini")
+		add(base, a.APIKey, "gpt-image-2")
 	}
 	if envKey := strings.TrimSpace(os.Getenv("XKIRO_API_KEY")); envKey != "" {
 		add(base, envKey, model)
-		add(base, envKey, "gpt-4o")
-		add(base, envKey, "gpt-4o-mini")
+		add(base, envKey, "gpt-image-2")
 	}
 
-	// 3. Check UPSTREAM_API_KEYS
+	// 4. Check UPSTREAM_API_KEYS
 	upstreamBase := strings.TrimRight(strings.TrimSpace(os.Getenv("UPSTREAM_BASE_URL")), "/")
 	if upstreamBase == "" {
 		upstreamBase = "https://proxyhack.mafiavietnam1945.workers.dev/v1"
@@ -213,14 +228,13 @@ func (a *XKiroVisionAnalyzer) getCandidateEndpoints() []visionEndpoint {
 		for _, k := range strings.Split(raw, ",") {
 			k = strings.TrimSpace(k)
 			if k != "" {
+				add(upstreamBase, k, "gpt-image-2")
 				add(upstreamBase, k, "deepseek/deepseek-v4-flash")
-				add(upstreamBase, k, "gpt-4o")
-				add(upstreamBase, k, "gpt-4o-mini")
 			}
 		}
 	}
 
-	// 4. Fallback default
+	// 5. Fallback default
 	if len(list) == 0 {
 		add(base, "sk-default", model)
 	}
@@ -235,20 +249,26 @@ func (a *XKiroVisionAnalyzer) getBaseURL() string {
 	if a.BaseURL != "" && a.BaseURL != "https://api.xkiro.com/v1" {
 		return a.BaseURL
 	}
+	if u := strings.TrimSpace(os.Getenv("MACHGEN_API_URL")); u != "" {
+		return strings.TrimRight(u, "/")
+	}
 	if u := strings.TrimSpace(os.Getenv("UPSTREAM_BASE_URL")); u != "" {
 		return strings.TrimRight(u, "/")
 	}
-	return "https://apigiare.vn/v1"
+	return "https://api.machgen.ai"
 }
 
 func (a *XKiroVisionAnalyzer) getModel() string {
+	if m := strings.TrimSpace(os.Getenv("MACHGEN_MODEL")); m != "" {
+		return m
+	}
 	if m := strings.TrimSpace(os.Getenv("XKIRO_VISION_MODEL")); m != "" {
 		return m
 	}
-	if a.Model != "" && a.Model != "deepseek/deepseek-v4-flash-vision-exp" {
+	if a.Model != "" {
 		return a.Model
 	}
-	return "gpt-4o"
+	return "gpt-image-2"
 }
 
 func (a *XKiroVisionAnalyzer) AnalyzeStyle(ctx context.Context, refImgBytes []byte, placement model.Placement) (*StyleAnalysisResult, error) {
