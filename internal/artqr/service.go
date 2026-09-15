@@ -679,8 +679,24 @@ func (s *Service) processJob(job *model.ArtQRJob, binaryMask *qr.BinaryQRMask, p
 
 	// Step A: Determine Prompt
 	finalPrompt := preset.Prompt
-	if strings.TrimSpace(job.Prompt) != "" {
-		finalPrompt = strings.TrimSpace(job.Prompt)
+	if job.PresetID == "custom" || job.PresetID == "custom_reference" || strings.HasPrefix(job.PresetID, "custom_") {
+		if strings.TrimSpace(job.Prompt) != "" {
+			if strings.Contains(job.Prompt, "ABSOLUTE TOP PRIORITY") {
+				finalPrompt = strings.TrimSpace(job.Prompt)
+			} else {
+				finalPrompt, _ = prompt.BuildCustomReferencePrompt(nil, job.Prompt, job.Placement)
+			}
+		} else if len(job.ReferenceImageJPEG) > 0 {
+			// On-the-fly vision analysis of custom reference scene
+			analysis, _ := s.analyzer.AnalyzeStyle(ctx, job.ReferenceImageJPEG, job.Placement)
+			finalPrompt, _ = prompt.BuildCustomReferencePrompt(analysis, "", job.Placement)
+		}
+	} else if strings.TrimSpace(job.Prompt) != "" {
+		if strings.Contains(job.Prompt, "ABSOLUTE TOP PRIORITY") {
+			finalPrompt = strings.TrimSpace(job.Prompt)
+		} else {
+			finalPrompt, _ = prompt.BuildCustomReferencePrompt(nil, job.Prompt, job.Placement)
+		}
 	}
 	job.Prompt = finalPrompt
 	job.NegativePrompt = preset.NegativePrompt

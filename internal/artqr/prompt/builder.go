@@ -622,16 +622,7 @@ func BuildPrompt(preset *model.ArtQRPreset, analysis *vision.StyleAnalysisResult
 	negativePrompt := StandardNegativePrompt
 
 	if analysis != nil && analysis.GeneratedPrompt != "" {
-		paletteStr := strings.Join(analysis.Palette, ", ")
-		basePrompt = fmt.Sprintf(
-			"Masterpiece %s composition, %s. Color palette: %s. Texture: %s. Lighting: %s. "+
-				"Preserve the exact character, person, clothes, textures, folds, and details of the image.",
-			analysis.Style,
-			analysis.GeneratedPrompt,
-			paletteStr,
-			analysis.Texture,
-			analysis.Lighting,
-		)
+		return BuildCustomReferencePrompt(analysis, "", placement)
 	} else if preset != nil {
 		basePrompt = preset.Prompt
 		if preset.NegativePrompt != "" {
@@ -644,3 +635,95 @@ func BuildPrompt(preset *model.ArtQRPreset, analysis *vision.StyleAnalysisResult
 	fullPrompt := strings.TrimSpace(basePrompt)
 	return fullPrompt, negativePrompt
 }
+
+// BuildCustomReferencePrompt constructs an authoritative prompt for custom reference scenes,
+// guaranteeing that AI blends the QR into the analyzed style while strictly preserving
+// 100% of module coordinates, square boundaries, and finder patterns without alteration.
+func BuildCustomReferencePrompt(analysis *vision.StyleAnalysisResult, rawCustomPrompt string, placement model.Placement) (string, string) {
+	styleDesc := "artistic masterpiece composition with intricate natural material textures"
+	lightingDesc := "dramatic cinematic studio lighting"
+	textureDesc := "organic fine surface textures, micro-details, and seamless material shading"
+	paletteDesc := "harmonious palette"
+	sceneDetails := "custom reference artwork"
+
+	if analysis != nil {
+		if analysis.Style != "" {
+			styleDesc = analysis.Style
+		}
+		if analysis.Lighting != "" {
+			lightingDesc = analysis.Lighting
+		}
+		if analysis.Texture != "" {
+			textureDesc = analysis.Texture
+		}
+		if len(analysis.Palette) > 0 {
+			paletteDesc = strings.Join(analysis.Palette, ", ")
+		}
+		if analysis.GeneratedPrompt != "" {
+			sceneDetails = analysis.GeneratedPrompt
+		}
+	}
+
+	if strings.TrimSpace(rawCustomPrompt) != "" {
+		sceneDetails = strings.TrimSpace(rawCustomPrompt)
+	}
+
+	prompt := fmt.Sprintf(`ABSOLUTE TOP PRIORITY — PRESERVE THE EXACT POSITION, SIZE, SHAPE, SPACING, AND DARK/LIGHT STATE OF EVERY QR MODULE FROM THE SECOND PROVIDED IMAGE. DO NOT MOVE, REDRAW, REGENERATE, WARP, MERGE, SPLIT, THIN, THICKEN, ROUND, BLUR, OR RESTRUCTURE ANY MODULE. ONLY CHANGE THE VISUAL SURFACE EFFECT INSIDE THE EXISTING MODULES.
+
+The first provided image is the custom reference artwork: %s.
+Style: %s.
+Lighting: %s.
+Color palette: %s.
+Texture: %s.
+
+The second provided image is the cleaned original valid QR code and is the ONLY authoritative QR structural source.
+
+The QR module positions from the second provided image must remain strictly unchanged and locked in place.
+
+TASK:
+Seamlessly weave and embed the exact QR module pattern from the second provided image into the target region of the reference scene.
+
+Make the QR look organically integrated into the surface texture (%s), matching the surrounding colors (%s) and lighting (%s).
+
+The module geometry must remain locked:
+- preserve every module position
+- preserve every module size
+- preserve every module square boundary
+- preserve every dark/light state
+- preserve all 3 corner finder patterns (position detection squares)
+- preserve all timing and alignment patterns
+- complete QR topology and scannability
+
+DO NOT:
+- generate a new QR
+- redraw the QR
+- approximate the QR
+- move, shift, or drift modules
+- add or remove modules
+- merge or split modules
+- warp, bend, curve, or perspective-distort the QR
+- blur module edges or round module corners
+
+ONLY THE VISUAL MATERIAL EFFECT MAY CHANGE.
+
+For existing dark QR modules:
+change their appearance from flat black into rich textured material matching the scene (%s).
+
+For light QR modules:
+use the natural lighter ambient background of the reference image.
+
+Maintain high contrast between dark modules and light background. Keep finder patterns especially crisp, distinct, and scannable.`,
+		sceneDetails,
+		styleDesc,
+		lightingDesc,
+		paletteDesc,
+		textureDesc,
+		textureDesc,
+		paletteDesc,
+		lightingDesc,
+		textureDesc,
+	)
+
+	return prompt, StandardNegativePrompt
+}
+
