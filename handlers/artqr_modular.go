@@ -325,33 +325,7 @@ func AnalyzeStyleHandler(w http.ResponseWriter, r *http.Request) {
 
 	result, err := defaultArtQRService.AnalyzeStyle(r.Context(), refBytes, placement)
 	if err != nil || result == nil {
-		fallbackResult := &vision.StyleAnalysisResult{
-			Style:            "Tác phẩm nghệ thuật tự nhiên",
-			SceneDescription: "bức ảnh tham chiếu với các chi tiết tự nhiên",
-			TargetSurface:    "bề mặt vật thể chính trong ảnh",
-			Palette:          []string{"#8b0000", "#ffd700", "#1a202c", "#f5d0a9"},
-			Lighting:         "Ánh sáng studio cinematic",
-			Texture:          "Vân bề mặt và chi tiết tự nhiên",
-			DarkModuleStyle:  []string{"màu sắc đậm tương thích với bề mặt", "shading tự nhiên theo hướng sáng"},
-			LightModuleStyle: "màu sáng tự nhiên của bề mặt",
-			SurfaceState:     "Bề mặt vật thể trong ảnh phải trông hoàn thiện, sắc nét và màu sắc hài hòa.",
-		}
-		fullPrompt, _ := prompt.BuildCustomReferencePrompt(fallbackResult, "", placement)
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"style":              fallbackResult.Style,
-			"scene_description":  fallbackResult.SceneDescription,
-			"target_surface":     fallbackResult.TargetSurface,
-			"optimal_placement":  placement,
-			"dark_module_style":  fallbackResult.DarkModuleStyle,
-			"light_module_style": fallbackResult.LightModuleStyle,
-			"surface_state":      fallbackResult.SurfaceState,
-			"palette":            fallbackResult.Palette,
-			"lighting":           fallbackResult.Lighting,
-			"texture":            fallbackResult.Texture,
-			"prompt":             fullPrompt,
-		})
-		return
+		result = vision.AnalyzeImageLocally(refBytes, placement)
 	}
 
 	targetPlacement := placement

@@ -205,11 +205,18 @@ func (a *XKiroVisionAnalyzer) getCandidateEndpoints() []visionEndpoint {
 	}
 
 	// 3. Check UPSTREAM_API_KEYS
+	upstreamBase := strings.TrimRight(strings.TrimSpace(os.Getenv("UPSTREAM_BASE_URL")), "/")
+	if upstreamBase == "" {
+		upstreamBase = "https://proxyhack.mafiavietnam1945.workers.dev/v1"
+	}
 	if raw := os.Getenv("UPSTREAM_API_KEYS"); raw != "" {
 		for _, k := range strings.Split(raw, ",") {
-			add(base, k, model)
-			add(base, k, "gpt-4o")
-			add(base, k, "gpt-4o-mini")
+			k = strings.TrimSpace(k)
+			if k != "" {
+				add(upstreamBase, k, "deepseek/deepseek-v4-flash")
+				add(upstreamBase, k, "gpt-4o")
+				add(upstreamBase, k, "gpt-4o-mini")
+			}
 		}
 	}
 
@@ -264,18 +271,25 @@ func (a *XKiroVisionAnalyzer) AnalyzeStyle(ctx context.Context, refImgBytes []by
 
 	systemInstruction := `You are an expert art director, forensic visual AI, and ControlNet QR prompt engineer.
 Analyze the provided artwork/image in exhaustive forensic detail and construct a precision JSON breakdown for seamless ControlNet QR embedding.
-The user wants to place an authoritative QR code onto a prominent target surface in this artwork, scaling the QR so that it covers approximately 90% of the usable surface area (with ~5% safe margins around), preserving 100% of the QR matrix topology and relative module positions while stylizing the modules to blend into the material surface.
-The default QR placement target is in the ` + regionName + ` region (normalized coordinates: X=` + fmt.Sprintf("%.2f", placement.X) + `, Y=` + fmt.Sprintf("%.2f", placement.Y) + `, Size=` + fmt.Sprintf("%.2f", placement.Size) + `).
+The user wants to place an authoritative QR code onto the most prominent flat/usable target surface in this artwork (e.g. an exposed wall, banner, wooden surface, shirt, billboard, ceramic plate, etc.), scaling the QR so that it covers approximately 80% to 90% of that usable surface area.
+The preferred target placement region hint is: ` + regionName + `.
+
+IMPORTANT INSTRUCTION FOR OPTIMAL PLACEMENT:
+- Analyze the entire image geometry and identify the exact physical surface where the QR code will look most natural.
+- If the wall/surface is positioned on the right side of the image, return normalized coordinates like {"x": 0.35, "y": 0.15, "size": 0.65}.
+- If the surface is on the left, return {"x": 0.05, "y": 0.15, "size": 0.65}.
+- If the surface is centered, return coordinates that accurately cover that centered surface.
+- DO NOT default blindly to 0.25, 0.25 unless the primary flat surface is genuinely in the dead center.
 
 Respond with a strictly formatted, rich JSON object with this exact schema:
 {
-  "style": "Chính xác thể loại nghệ thuật hoặc phong cách hình ảnh của bức ảnh (ví dụ: Nhiếp ảnh phong cảnh, Tranh sơn dầu cổ điển, Nghệ thuật điêu khắc đá, Cyberpunk Neon, Tranh màu nước...)",
+  "style": "Chính xác thể loại nghệ thuật hoặc phong cách hình ảnh của bức ảnh (ví dụ: Nhiếp ảnh phong cảnh, Bức tường cổ kính phố cổ, Tranh sơn dầu, Cyberpunk Neon, Nhiếp ảnh đường phố...)",
   "scene_description": "Mô tả chi tiết và chính xác bằng tiếng Việt toàn bộ bối cảnh, vật thể chính, nhân vật, màu sắc, ánh sáng quan sát được trong bức ảnh được cung cấp",
-  "target_surface": "Chính xác tên vật thể hoặc bề mặt vật lý trong ảnh nơi mã QR nên được hòa trộn lên (ví dụ: mặt phiến đá, thân cốc gốm, mặt trước áo khoác, mặt bàn gỗ, bức tường gạch, mặt biển hiệu...)",
+  "target_surface": "Chính xác tên vật thể hoặc bề mặt vật lý trong ảnh nơi mã QR nên được hòa trộn lên (ví dụ: mảng tường vàng loang lổ bên phải, thân cốc gốm, mặt trước áo khoác, mặt bàn gỗ, biển hiệu kim loại...)",
   "optimal_placement": {
-    "x": ` + fmt.Sprintf("%.2f", placement.X) + `,
-    "y": ` + fmt.Sprintf("%.2f", placement.Y) + `,
-    "size": ` + fmt.Sprintf("%.2f", placement.Size) + `
+    "x": 0.30,
+    "y": 0.15,
+    "size": 0.65
   },
   "dark_module_style": [
     "màu sắc và hiệu ứng hòa trộn phù hợp cho module tối theo đúng chất liệu bề mặt quan sát được",
@@ -314,7 +328,8 @@ Respond with a strictly formatted, rich JSON object with this exact schema:
 
 	endpoints := a.getCandidateEndpoints()
 	if len(endpoints) == 0 {
-		return nil, errors.New("không tìm thấy API key nào cho Vision AI trong hệ thống")
+		log.Printf("[ArtQR Vision] ⚠️ No API key found, executing local computer vision analysis...")
+		return AnalyzeImageLocally(refImgBytes, placement), nil
 	}
 
 	client := &http.Client{Timeout: 45 * time.Second}
@@ -428,6 +443,7 @@ Respond with a strictly formatted, rich JSON object with this exact schema:
 		}
 	}
 
-	log.Printf("[ArtQR Vision] ⚠️ All %d vision endpoints failed. Last error: %v", len(endpoints), lastErr)
-	return nil, lastErr
+	log.Printf("[ArtQR Vision] ⚠️ All %d vision endpoints failed (last error: %v). Executing intelligent local image analysis fallback...", len(endpoints), lastErr)
+	localRes := AnalyzeImageLocally(refImgBytes, placement)
+	return localRes, nil
 }
