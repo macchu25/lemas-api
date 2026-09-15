@@ -673,6 +673,27 @@ func (r *KeyRotator) GetAllActiveImageKeys() []*UpstreamKey {
 	return result
 }
 
+// GetAllActiveVisionKeys returns all active upstream keys configured in the pool for Vision AI inspection
+func (r *KeyRotator) GetAllActiveVisionKeys() []*UpstreamKey {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var result []*UpstreamKey
+	for _, k := range r.keys {
+		if k.IsActive && k.Key != "" {
+			kCopy := *k
+			if kCopy.BaseURL == "" {
+				kCopy.BaseURL = r.baseURL
+			}
+			result = append(result, &kCopy)
+		}
+	}
+	return result
+}
+
 // Realistic client User-Agents to prevent fingerprinting
 var stealthUserAgents = []string{
 	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",

@@ -11,14 +11,17 @@ import (
 	_ "image/gif"
 	"image/jpeg"
 	_ "image/png"
-	_ "golang.org/x/image/webp"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
+	_ "golang.org/x/image/webp"
+
 	"xkiro-backend/internal/artqr/model"
+	"xkiro-backend/services"
 )
 
 type StyleAnalysisResult struct {
@@ -144,23 +147,78 @@ func cropPatch(refImgBytes []byte, p model.Placement) []byte {
 	return nil
 }
 
-func (a *XKiroVisionAnalyzer) getKeys() []string {
-	var keys []string
-	if a.APIKey != "" {
-		keys = append(keys, a.APIKey)
-	}
-	if envKey := strings.TrimSpace(os.Getenv("XKIRO_API_KEY")); envKey != "" {
-		keys = append(keys, envKey)
-	}
-	if raw := os.Getenv("UPSTREAM_API_KEYS"); raw != "" {
-		for _, k := range strings.Split(raw, ",") {
-			k = strings.TrimSpace(k)
-			if k != "" {
-				keys = append(keys, k)
-			}
+type visionEndpoint struct {
+	BaseURL string
+	APIKey  string
+	Model   string
+}
+
+func (a *XKiroVisionAnalyzer) getCandidateEndpoints() []visionEndpoint {
+	var list []visionEndpoint
+	seen := make(map[string]bool)
+
+	add := func(url, key, model string) {
+		url = strings.TrimRight(strings.TrimSpace(url), "/")
+		key = strings.TrimSpace(key)
+		model = strings.TrimSpace(model)
+		if key == "" {
+			return
+		}
+		if url == "" {
+			url = "https://apigiare.vn/v1"
+		}
+		if model == "" {
+			model = "gpt-4o"
+		}
+		combo := url + ":" + key + ":" + model
+		if !seen[combo] {
+			seen[combo] = true
+			list = append(list, visionEndpoint{BaseURL: url, APIKey: key, Model: model})
 		}
 	}
-	return keys
+
+	// 1. Check services.DefaultRotator keys first (from Database & Admin Key Manager)
+	if services.DefaultRotator != nil {
+		for _, k := range services.DefaultRotator.GetAllActiveVisionKeys() {
+			m := k.Model
+			if m == "" || strings.EqualFold(m, "flux") || strings.Contains(strings.ToLower(m), "image") {
+				m = "gpt-4o"
+			}
+			add(k.BaseURL, k.Key, m)
+			add(k.BaseURL, k.Key, "gpt-4o")
+			add(k.BaseURL, k.Key, "gpt-4o-mini")
+		}
+	}
+
+	// 2. Check XKIRO_API_KEY / XKIRO_BASE_URL
+	base := a.getBaseURL()
+	model := a.getModel()
+	if a.APIKey != "" {
+		add(base, a.APIKey, model)
+		add(base, a.APIKey, "gpt-4o")
+		add(base, a.APIKey, "gpt-4o-mini")
+	}
+	if envKey := strings.TrimSpace(os.Getenv("XKIRO_API_KEY")); envKey != "" {
+		add(base, envKey, model)
+		add(base, envKey, "gpt-4o")
+		add(base, envKey, "gpt-4o-mini")
+	}
+
+	// 3. Check UPSTREAM_API_KEYS
+	if raw := os.Getenv("UPSTREAM_API_KEYS"); raw != "" {
+		for _, k := range strings.Split(raw, ",") {
+			add(base, k, model)
+			add(base, k, "gpt-4o")
+			add(base, k, "gpt-4o-mini")
+		}
+	}
+
+	// 4. Fallback default
+	if len(list) == 0 {
+		add(base, "sk-default", model)
+	}
+
+	return list
 }
 
 func (a *XKiroVisionAnalyzer) getBaseURL() string {
@@ -254,105 +312,122 @@ Respond with a strictly formatted, rich JSON object with this exact schema:
 		)
 	}
 
-	requestBody := map[string]any{
-		"model": a.getModel(),
-		"messages": []map[string]any{
-			{
-				"role":    "system",
-				"content": systemInstruction,
-			},
-			{
-				"role":    "user",
-				"content": userContents,
-			},
-		},
-		"temperature":     0.2,
-		"response_format": map[string]string{"type": "json_object"},
-	}
-
-	payloadBytes, err := json.Marshal(requestBody)
-	if err != nil {
-		return nil, err
-	}
-
-	keys := a.getKeys()
-	if len(keys) == 0 {
-		return nil, errors.New("không tìm thấy UPSTREAM_API_KEYS trong cấu hình .env")
+	endpoints := a.getCandidateEndpoints()
+	if len(endpoints) == 0 {
+		return nil, errors.New("không tìm thấy API key nào cho Vision AI trong hệ thống")
 	}
 
 	client := &http.Client{Timeout: 45 * time.Second}
 	var lastErr error
 
-	for _, key := range keys {
-		reqURL := a.getBaseURL() + "/chat/completions"
-		req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(payloadBytes))
-		if reqErr != nil {
-			lastErr = reqErr
-			continue
-		}
+	for _, ep := range endpoints {
+		// Try with response_format json_object first, fallback to standard if rejected
+		formats := []bool{true, false}
+		for _, useJSONFormat := range formats {
+			reqMap := map[string]any{
+				"model": ep.Model,
+				"messages": []map[string]any{
+					{
+						"role":    "system",
+						"content": systemInstruction,
+					},
+					{
+						"role":    "user",
+						"content": userContents,
+					},
+				},
+				"temperature": 0.2,
+			}
+			if useJSONFormat {
+				reqMap["response_format"] = map[string]string{"type": "json_object"}
+			}
 
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+key)
-		req.Header.Set("User-Agent", "OpenAI/Python/1.42.0")
-		req.Header.Set("Accept", "application/json")
+			payloadBytes, err := json.Marshal(reqMap)
+			if err != nil {
+				lastErr = err
+				continue
+			}
 
-		resp, doErr := client.Do(req)
-		if doErr != nil {
-			lastErr = doErr
-			continue
-		}
+			reqURL := ep.BaseURL + "/chat/completions"
+			req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(payloadBytes))
+			if reqErr != nil {
+				lastErr = reqErr
+				continue
+			}
 
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+ep.APIKey)
+			req.Header.Set("User-Agent", "OpenAI/Python/1.42.0")
+			req.Header.Set("Accept", "application/json")
 
-		if resp.StatusCode != http.StatusOK {
-			lastErr = fmt.Errorf("xKiro vision returned status %d: %s", resp.StatusCode, string(bodyBytes))
-			continue
-		}
+			resp, doErr := client.Do(req)
+			if doErr != nil {
+				lastErr = doErr
+				continue
+			}
 
-		var chatResp struct {
-			Choices []struct {
-				Message struct {
-					Content string `json:"content"`
-				} `json:"message"`
-			} `json:"choices"`
-		}
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
 
-		if unmarshalErr := json.Unmarshal(bodyBytes, &chatResp); unmarshalErr != nil {
-			lastErr = unmarshalErr
-			continue
-		}
+			if resp.StatusCode != http.StatusOK {
+				lastErr = fmt.Errorf("vision returned HTTP %d via %s: %s", resp.StatusCode, ep.BaseURL, string(bodyBytes))
+				if resp.StatusCode == http.StatusBadRequest && useJSONFormat {
+					// Retry without response_format
+					continue
+				}
+				break // move to next endpoint
+			}
 
-		if len(chatResp.Choices) == 0 || chatResp.Choices[0].Message.Content == "" {
-			lastErr = errors.New("empty response content from vision model")
-			continue
-		}
+			var chatResp struct {
+				Choices []struct {
+					Message struct {
+						Content string `json:"content"`
+					} `json:"message"`
+				} `json:"choices"`
+			}
 
-		rawJSON := chatResp.Choices[0].Message.Content
-		rawJSON = strings.TrimSpace(rawJSON)
-		if strings.HasPrefix(rawJSON, "```json") {
-			rawJSON = strings.TrimPrefix(rawJSON, "```json")
-			rawJSON = strings.TrimSuffix(rawJSON, "```")
+			if unmarshalErr := json.Unmarshal(bodyBytes, &chatResp); unmarshalErr != nil {
+				lastErr = unmarshalErr
+				break
+			}
+
+			if len(chatResp.Choices) == 0 || chatResp.Choices[0].Message.Content == "" {
+				lastErr = errors.New("empty response content from vision model")
+				break
+			}
+
+			rawJSON := chatResp.Choices[0].Message.Content
 			rawJSON = strings.TrimSpace(rawJSON)
-		} else if strings.HasPrefix(rawJSON, "```") {
-			rawJSON = strings.TrimPrefix(rawJSON, "```")
-			rawJSON = strings.TrimSuffix(rawJSON, "```")
-			rawJSON = strings.TrimSpace(rawJSON)
-		}
+			if strings.HasPrefix(rawJSON, "```json") {
+				rawJSON = strings.TrimPrefix(rawJSON, "```json")
+				rawJSON = strings.TrimSuffix(rawJSON, "```")
+				rawJSON = strings.TrimSpace(rawJSON)
+			} else if strings.HasPrefix(rawJSON, "```") {
+				rawJSON = strings.TrimPrefix(rawJSON, "```")
+				rawJSON = strings.TrimSuffix(rawJSON, "```")
+				rawJSON = strings.TrimSpace(rawJSON)
+			} else if idx := strings.Index(rawJSON, "{"); idx != -1 {
+				if endIdx := strings.LastIndex(rawJSON, "}"); endIdx != -1 && endIdx > idx {
+					rawJSON = rawJSON[idx : endIdx+1]
+				}
+			}
 
-		var result StyleAnalysisResult
-		if parseErr := json.Unmarshal([]byte(rawJSON), &result); parseErr != nil {
-			lastErr = parseErr
-			continue
-		}
+			var result StyleAnalysisResult
+			if parseErr := json.Unmarshal([]byte(rawJSON), &result); parseErr != nil {
+				lastErr = parseErr
+				break
+			}
 
-		result.RawJSON = rawJSON
-		if result.PatchPrompt == "" {
-			result.PatchPrompt = fmt.Sprintf("Intricate %s texture, woven embroidery, subtle fabric folds, dramatic lighting highlights, masterwork craft, sharp contrast", result.Texture)
-		}
+			result.RawJSON = rawJSON
+			if result.PatchPrompt == "" {
+				result.PatchPrompt = fmt.Sprintf("Intricate %s texture, dramatic lighting highlights, masterwork craft, sharp contrast", result.Texture)
+			}
 
-		return &result, nil
+			log.Printf("[ArtQR Vision] Successfully analyzed reference image via %s (target_surface=%q, style=%q)", ep.BaseURL, result.TargetSurface, result.Style)
+			return &result, nil
+		}
 	}
 
+	log.Printf("[ArtQR Vision] ⚠️ All %d vision endpoints failed. Last error: %v", len(endpoints), lastErr)
 	return nil, lastErr
 }
