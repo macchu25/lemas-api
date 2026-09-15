@@ -205,34 +205,31 @@ func (a *XKiroVisionAnalyzer) AnalyzeStyle(ctx context.Context, refImgBytes []by
 	}
 
 	systemInstruction := `You are an expert art director, forensic visual AI, and ControlNet QR prompt engineer.
-Analyze the provided artwork in exhaustive forensic detail and construct a precision JSON breakdown for seamless ControlNet QR embedding.
+Analyze the provided artwork/image in exhaustive forensic detail and construct a precision JSON breakdown for seamless ControlNet QR embedding.
 The user wants to place an authoritative QR code onto a prominent target surface in this artwork, scaling the QR so that it covers approximately 90% of the usable surface area (with ~5% safe margins around), preserving 100% of the QR matrix topology and relative module positions while stylizing the modules to blend into the material surface.
 The default QR placement target is in the ` + regionName + ` region (normalized coordinates: X=` + fmt.Sprintf("%.2f", placement.X) + `, Y=` + fmt.Sprintf("%.2f", placement.Y) + `, Size=` + fmt.Sprintf("%.2f", placement.Size) + `).
 
 Respond with a strictly formatted, rich JSON object with this exact schema:
 {
-  "style": "Exact artistic genre and visual medium (e.g. Doraemon anime cartoon, 19th Century Oil Portrait, Cyberpunk Neon)",
-  "scene_description": "Detailed description in Vietnamese of the artwork scene, subjects, characters, colors, background elements (e.g. cảnh hoạt hình Doraemon với cánh tay xanh, bàn tay trắng, miếng bánh mì và nền tia đỏ vàng)",
-  "target_surface": "Exact physical object / surface in Vietnamese where QR should be placed (e.g. mặt trước miếng bánh mì, mặt trước áo khoác, phiến gỗ sồi, mặt trước tấm biển hiệu)",
+  "style": "Chính xác thể loại nghệ thuật hoặc phong cách hình ảnh của bức ảnh (ví dụ: Nhiếp ảnh phong cảnh, Tranh sơn dầu cổ điển, Nghệ thuật điêu khắc đá, Cyberpunk Neon, Tranh màu nước...)",
+  "scene_description": "Mô tả chi tiết và chính xác bằng tiếng Việt toàn bộ bối cảnh, vật thể chính, nhân vật, màu sắc, ánh sáng quan sát được trong bức ảnh được cung cấp",
+  "target_surface": "Chính xác tên vật thể hoặc bề mặt vật lý trong ảnh nơi mã QR nên được hòa trộn lên (ví dụ: mặt phiến đá, thân cốc gốm, mặt trước áo khoác, mặt bàn gỗ, bức tường gạch, mặt biển hiệu...)",
   "optimal_placement": {
-    "x": 0.41,
-    "y": 0.28,
-    "size": 0.30
+    "x": ` + fmt.Sprintf("%.2f", placement.X) + `,
+    "y": ` + fmt.Sprintf("%.2f", placement.Y) + `,
+    "size": ` + fmt.Sprintf("%.2f", placement.Size) + `
   },
   "dark_module_style": [
-    "nâu bánh nướng",
-    "nâu cháy",
-    "màu caramel đậm",
-    "shading nhẹ",
-    "cảm giác vật liệu bánh mì"
+    "màu sắc và hiệu ứng hòa trộn phù hợp cho module tối theo đúng chất liệu bề mặt quan sát được",
+    "hiệu ứng đổ bóng và vân bề mặt chân thực"
   ],
-  "light_module_style": "màu bánh mì sáng tự nhiên / màu ruột bánh vàng kem",
-  "surface_state": "Mô tả trạng thái và màu sắc chi tiết cần tối ưu của bề mặt vật thể bằng tiếng Việt (e.g. Miếng bánh mì trong ảnh kết quả phải trông ĐÃ ĐƯỢC NƯỚNG CHÍN, phần ruột bánh màu vàng kem ấm hơn, viền bánh nâu vàng rõ, không làm bánh bị sống hoặc trắng bệch...)",
+  "light_module_style": "màu sắc và hiệu ứng cho module sáng theo đúng bề mặt nền tự nhiên của vật thể trong ảnh",
+  "surface_state": "Mô tả trạng thái hoàn thiện, độ bóng, độ nhám, màu sắc và chi tiết bề mặt vật thể trong ảnh bằng tiếng Việt",
   "palette": ["#hex1", "#hex2", "#hex3", "#hex4", "#hex5"],
-  "lighting": "Precise lighting direction, warmth and bounce highlights",
-  "texture": "Visible texture details (e.g. thớ bánh mì nướng, sợi vải dệt, thớ gỗ mộc...)",
-  "contrast": "Luminance ratio between highlights and deep shadows",
-  "generated_prompt": "Masterpiece summary prompt in Vietnamese"
+  "lighting": "Hướng chiếu sáng, độ ấm và tương phản sáng tối trong ảnh",
+  "texture": "Chi tiết vân chất liệu nhìn thấy trên bề mặt vật thể trong ảnh",
+  "contrast": "Tương phản giữa vùng sáng và vùng tối",
+  "generated_prompt": "Mô tả tổng thể phong cách và chất liệu bề mặt bằng tiếng Việt"
 }`
 
 	userPrompt := "Analyze this reference image and target region for QR embedding. Image 1 is the full artwork. "

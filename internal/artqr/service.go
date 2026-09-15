@@ -511,13 +511,30 @@ func (s *Service) CreateJob(ctx context.Context, params CreateJobParams) (*model
 	}
 
 	// 3. Resolve preset & placement
+	if len(params.ReferenceBytes) > 0 && (params.PresetID == "" || params.PresetID == "bread_toast" || params.PresetID == "custom") {
+		params.PresetID = "custom"
+	}
 	if params.PresetID == "" {
 		params.PresetID = "bread_toast"
 	}
 	preset, hasPreset := s.GetPreset(params.PresetID)
 	if !hasPreset || preset == nil {
-		preset = &prompt.DefaultPresets[0]
-		params.PresetID = preset.ID
+		if params.PresetID == "custom" {
+			preset = &model.ArtQRPreset{
+				ID:                  "custom",
+				Slug:                "custom",
+				Name:                "Ảnh Phôi Tự Tải Lên (Custom Scene)",
+				Description:         "Hòa trộn mã QR lên ảnh phôi tự tải, giữ nguyên ma trận ô vuông module tuyệt đối",
+				QuietZoneModules:    4,
+				AllowGeometryChange: false,
+				ConditioningScale:   1.45,
+				GuidanceScale:       7.5,
+				Enabled:             true,
+			}
+		} else {
+			preset = &prompt.DefaultPresets[0]
+			params.PresetID = preset.ID
+		}
 	}
 
 	if !params.Placement.IsValid() {
@@ -681,7 +698,7 @@ func (s *Service) processJob(job *model.ArtQRJob, binaryMask *qr.BinaryQRMask, p
 	finalPrompt := preset.Prompt
 	if job.PresetID == "custom" || job.PresetID == "custom_reference" || strings.HasPrefix(job.PresetID, "custom_") {
 		if strings.TrimSpace(job.Prompt) != "" {
-			if strings.Contains(job.Prompt, "ABSOLUTE TOP PRIORITY") {
+			if strings.Contains(job.Prompt, "QUY TẮC QUAN TRỌNG NHẤT") || strings.Contains(job.Prompt, "HÃY ĐỌC TOÀN BỘ YÊU CẦU") || strings.Contains(job.Prompt, "ABSOLUTE TOP PRIORITY") {
 				finalPrompt = strings.TrimSpace(job.Prompt)
 			} else {
 				finalPrompt, _ = prompt.BuildCustomReferencePrompt(nil, job.Prompt, job.Placement)
@@ -692,7 +709,7 @@ func (s *Service) processJob(job *model.ArtQRJob, binaryMask *qr.BinaryQRMask, p
 			finalPrompt, _ = prompt.BuildCustomReferencePrompt(analysis, "", job.Placement)
 		}
 	} else if strings.TrimSpace(job.Prompt) != "" {
-		if strings.Contains(job.Prompt, "ABSOLUTE TOP PRIORITY") {
+		if strings.Contains(job.Prompt, "QUY TẮC QUAN TRỌNG NHẤT") || strings.Contains(job.Prompt, "HÃY ĐỌC TOÀN BỘ YÊU CẦU") || strings.Contains(job.Prompt, "ABSOLUTE TOP PRIORITY") {
 			finalPrompt = strings.TrimSpace(job.Prompt)
 		} else {
 			finalPrompt, _ = prompt.BuildCustomReferencePrompt(nil, job.Prompt, job.Placement)
