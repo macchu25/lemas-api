@@ -638,90 +638,274 @@ func BuildPrompt(preset *model.ArtQRPreset, analysis *vision.StyleAnalysisResult
 
 // BuildCustomReferencePrompt constructs an authoritative prompt for custom reference scenes,
 // guaranteeing that AI blends the QR into the analyzed style while strictly preserving
-// 100% of module coordinates, square boundaries, and finder patterns without alteration.
+// 100% of module coordinates, square boundaries, scaling, and finder patterns without alteration.
 func BuildCustomReferencePrompt(analysis *vision.StyleAnalysisResult, rawCustomPrompt string, placement model.Placement) (string, string) {
-	styleDesc := "artistic masterpiece composition with intricate natural material textures"
-	lightingDesc := "dramatic cinematic studio lighting"
-	textureDesc := "organic fine surface textures, micro-details, and seamless material shading"
-	paletteDesc := "harmonious palette"
-	sceneDetails := "custom reference artwork"
+	sceneDescription := "cảnh nghệ thuật với các chi tiết tự nhiên và bố cục đặc trưng"
+	targetSurface := "mặt trước của vật thể trong ảnh"
+	darkModuleStyleBullets := "- màu sắc đậm tương thích với vật liệu bề mặt\n- shading tự nhiên theo hướng sáng của ảnh\n- cảm giác chất liệu hòa nhập hữu cơ"
+	darkModuleExample := "vật liệu bề mặt màu đậm"
+	lightModuleExample := "màu sáng tự nhiên của bề mặt"
+	surfaceStateDetails := "Bề mặt vật thể trong ảnh kết quả phải trông hoàn thiện, sắc nét, có chiều sâu ánh sáng và màu sắc hài hòa với phong cách tổng thể."
 
 	if analysis != nil {
-		if analysis.Style != "" {
-			styleDesc = analysis.Style
+		if analysis.SceneDescription != "" {
+			sceneDescription = analysis.SceneDescription
+		} else if analysis.GeneratedPrompt != "" {
+			sceneDescription = analysis.GeneratedPrompt
 		}
-		if analysis.Lighting != "" {
-			lightingDesc = analysis.Lighting
+		if analysis.TargetSurface != "" {
+			targetSurface = analysis.TargetSurface
 		}
-		if analysis.Texture != "" {
-			textureDesc = analysis.Texture
+		if len(analysis.DarkModuleStyle) > 0 {
+			var bullets []string
+			for _, s := range analysis.DarkModuleStyle {
+				bullets = append(bullets, "- "+s)
+			}
+			darkModuleStyleBullets = strings.Join(bullets, "\n")
+			darkModuleExample = analysis.DarkModuleStyle[0]
+		} else if analysis.Texture != "" {
+			darkModuleStyleBullets = fmt.Sprintf("- chất liệu %s màu đậm\n- vân %s tự nhiên\n- shading ánh sáng hài hòa", analysis.Texture, analysis.Texture)
+			darkModuleExample = "chất liệu " + analysis.Texture + " màu đậm"
 		}
-		if len(analysis.Palette) > 0 {
-			paletteDesc = strings.Join(analysis.Palette, ", ")
+		if analysis.LightModuleStyle != "" {
+			lightModuleExample = analysis.LightModuleStyle
 		}
-		if analysis.GeneratedPrompt != "" {
-			sceneDetails = analysis.GeneratedPrompt
+		if analysis.SurfaceState != "" {
+			surfaceStateDetails = analysis.SurfaceState
+		} else if analysis.Style != "" {
+			surfaceStateDetails = fmt.Sprintf("Vật thể trong ảnh phải giữ đúng phong cách %s, ánh sáng %s, bảng màu hài hòa và có chiều sâu thẩm mỹ cao.", analysis.Style, analysis.Lighting)
 		}
 	}
 
 	if strings.TrimSpace(rawCustomPrompt) != "" {
-		sceneDetails = strings.TrimSpace(rawCustomPrompt)
+		if !strings.Contains(rawCustomPrompt, "QUY TẮC QUAN TRỌNG NHẤT") {
+			sceneDescription = strings.TrimSpace(rawCustomPrompt)
+		}
 	}
 
-	prompt := fmt.Sprintf(`ABSOLUTE TOP PRIORITY — PRESERVE THE EXACT POSITION, SIZE, SHAPE, SPACING, AND DARK/LIGHT STATE OF EVERY QR MODULE FROM THE SECOND PROVIDED IMAGE. DO NOT MOVE, REDRAW, REGENERATE, WARP, MERGE, SPLIT, THIN, THICKEN, ROUND, BLUR, OR RESTRUCTURE ANY MODULE. ONLY CHANGE THE VISUAL SURFACE EFFECT INSIDE THE EXISTING MODULES.
+	prompt := fmt.Sprintf(`HÃY ĐỌC TOÀN BỘ YÊU CẦU TRƯỚC KHI TẠO ẢNH.
 
-The first provided image is the custom reference artwork: %s.
-Style: %s.
-Lighting: %s.
-Color palette: %s.
-Texture: %s.
+Ảnh thứ hai là mã QR gốc và là nguồn cấu trúc QR duy nhất.
 
-The second provided image is the cleaned original valid QR code and is the ONLY authoritative QR structural source.
+Trong mã QR, mỗi ô nhỏ trong lưới được gọi là một module.
 
-The QR module positions from the second provided image must remain strictly unchanged and locked in place.
+QUY TẮC QUAN TRỌNG NHẤT:
 
-TASK:
-Seamlessly weave and embed the exact QR module pattern from the second provided image into the target region of the reference scene.
+KHÔNG ĐƯỢC THAY ĐỔI VỊ TRÍ TƯƠNG ĐỐI CỦA BẤT KỲ MODULE NÀO SO VỚI TOÀN BỘ MA TRẬN QR.
 
-Make the QR look organically integrated into the surface texture (%s), matching the surrounding colors (%s) and lighting (%s).
+Nghĩa là:
+- module nào đang nằm ở hàng nào, cột nào thì vẫn phải nằm đúng hàng và cột đó
+- không được chuyển một module sang vị trí khác
+- không được đổi chỗ hai module
+- không được làm lệch riêng một module
+- không được làm một vùng QR trôi sang vị trí khác
+- không được thay đổi mối quan hệ giữa các module
 
-The module geometry must remain locked:
-- preserve every module position
-- preserve every module size
-- preserve every module square boundary
-- preserve every dark/light state
-- preserve all 3 corner finder patterns (position detection squares)
-- preserve all timing and alignment patterns
-- complete QR topology and scannability
+Toàn bộ ma trận QR phải giữ nguyên topology.
 
-DO NOT:
-- generate a new QR
-- redraw the QR
-- approximate the QR
-- move, shift, or drift modules
-- add or remove modules
-- merge or split modules
-- warp, bend, curve, or perspective-distort the QR
-- blur module edges or round module corners
+Tuy nhiên:
 
-ONLY THE VISUAL MATERIAL EFFECT MAY CHANGE.
+ĐƯỢC PHÉP THAY ĐỔI PHONG CÁCH HÌNH ẢNH CỦA MODULE.
 
-For existing dark QR modules:
-change their appearance from flat black into rich textured material matching the scene (%s).
+Module tối không bắt buộc phải là ô đen phẳng.
 
-For light QR modules:
-use the natural lighter ambient background of the reference image.
+Module tối có thể được thể hiện theo phong cách phù hợp với %s, ví dụ:
+%s
 
-Maintain high contrast between dark modules and light background. Keep finder patterns especially crisp, distinct, and scannable.`,
-		sceneDetails,
-		styleDesc,
-		lightingDesc,
-		paletteDesc,
-		textureDesc,
-		textureDesc,
-		paletteDesc,
-		lightingDesc,
-		textureDesc,
+Mục tiêu là làm cho QR có cùng phong cách hình ảnh với %s.
+
+NHƯNG:
+
+Dù module được stylize như thế nào, mỗi module vẫn phải chiếm đúng vị trí tương đối của nó trong ma trận QR.
+
+Không được để styling làm:
+- module dịch sang ô khác
+- module biến mất
+- module mới xuất hiện ở vị trí không có trong QR gốc
+- hai module tách biệt bị nối nhầm vì hiệu ứng
+- module tối trở thành quá sáng
+- module sáng trở thành quá tối
+- cấu trúc finder pattern bị thay đổi
+
+Hãy hiểu như sau:
+
+QR gốc cung cấp một BẢN ĐỒ VỊ TRÍ.
+
+Bản đồ này bị khóa.
+
+Model được phép thay đổi CÁCH HIỂN THỊ của từng vùng trong bản đồ, nhưng không được thay đổi VỊ TRÍ của vùng đó.
+
+Ví dụ:
+
+Một module tối trong QR gốc có thể trở thành một vùng %s.
+
+Nhưng vùng đó phải vẫn nằm chính xác tại vị trí module gốc.
+
+Một module sáng có thể sử dụng %s.
+
+Nhưng nó vẫn phải giữ đúng vị trí sáng của QR gốc.
+
+==================================================
+BIẾN ĐỔI TOÀN BỘ QR
+==================================================
+
+Toàn bộ mã QR được phép được:
+- scale theo kích thước %s
+- di chuyển
+- scale đồng đều
+- xoay
+- nghiêng nhẹ
+- căn phối cảnh với mặt %s
+
+NHƯNG chỉ như MỘT TẤM PHẲNG DUY NHẤT.
+
+QUAN TRỌNG:
+PHẢI PHÓNG TO TOÀN BỘ QR RÕ RỆT ĐỂ QR PHỦ GẦN HẾT PHẦN MẶT TRƯỚC CÓ THỂ SỬ DỤNG CỦA %s.
+
+Không được giữ QR nhỏ ở giữa %s.
+
+Không được hiểu yêu cầu giữ nguyên vị trí tương đối module là phải giữ nguyên kích thước tổng thể của QR.
+
+Việc phóng to TOÀN BỘ QR được phép và BẮT BUỘC.
+
+Hãy coi toàn bộ QR giống như một layer ảnh vuông duy nhất.
+
+Khi cần làm QR lớn hơn:
+- chỉ phóng to toàn bộ layer QR cùng lúc
+- tất cả module lớn lên cùng một tỉ lệ
+- finder pattern lớn lên cùng một tỉ lệ
+- quiet zone lớn lên cùng một tỉ lệ
+- không tái tạo lại QR
+- không vẽ lại từng module
+
+MỤC TIÊU KÍCH THƯỚC:
+
+Xác định phần mặt trước của %s có thể sử dụng.
+
+Sau đó phóng to toàn bộ QR sao cho mép ngoài của QR/quiet zone chỉ cách mép an toàn của %s khoảng 5%%.
+
+Hiểu đơn giản:
+
+- mặt %s sử dụng được = 100%%
+- QR + quiet zone nên chiếm khoảng 90%% chiều rộng và 90%% chiều cao vùng đó
+- chỉ chừa khoảng 5%% lề bên trái
+- khoảng 5%% lề bên phải
+- khoảng 5%% lề phía trên
+- khoảng 5%% lề phía dưới
+
+QR phải lớn hơn rõ rệt so với phiên bản nhỏ trước đó.
+
+Ưu tiên QR lớn nhưng vẫn:
+- nằm hoàn toàn trên %s
+- không tràn ra ngoài viền
+- không bị các chi tiết khác che khuất
+- giữ quiet zone
+- giữ khả năng quét
+
+Nếu QR chưa gần chạm tới vùng lề an toàn 5%%, hãy tiếp tục phóng to TOÀN BỘ QR.
+
+Tất cả module phải cùng nhận một phép biến đổi toàn cục.
+
+Không được biến đổi từng module độc lập.
+
+Không được làm một module nghiêng khác module bên cạnh.
+
+Không được uốn cong cục bộ lưới QR.
+
+Không được phóng to từng module riêng lẻ.
+
+Không được tái tạo pattern QR để làm QR lớn hơn.
+
+Hãy coi toàn bộ QR như một tấm vật liệu có in sẵn bố cục QR:
+có thể phóng to, xoay hoặc nghiêng cả tấm,
+nhưng bố cục bên trong tấm không được thay đổi.
+
+==================================================
+FINDER PATTERN
+==================================================
+
+Ba cụm hình vuông lớn ở ba góc QR phải giữ đúng vị trí và cấu trúc tương đối.
+
+Có thể đổi màu/chất liệu để hòa với %s.
+
+Nhưng không được thay đổi bố cục ô sáng/tối bên trong finder pattern.
+
+==================================================
+QUIET ZONE
+==================================================
+
+Vùng sáng bao quanh QR phải vẫn rõ và dễ phân biệt.
+
+Có thể dùng %s thay cho trắng tinh.
+
+Nhưng không được thêm quá nhiều vùng tối làm mất quiet zone.
+
+Quiet zone phải được tính là một phần của toàn bộ QR khi phóng to.
+
+Không được phóng QR đến mức quiet zone bị cắt mất.
+
+==================================================
+TRẠNG THÁI VẬT THỂ
+==================================================
+
+%s
+
+==================================================
+NHIỆM VỤ
+==================================================
+
+Ảnh thứ nhất là %s.
+
+Đặt mã QR từ ảnh thứ hai lên %s.
+
+BẮT BUỘC PHÓNG TO TOÀN BỘ QR để QR gần phủ hết phần mặt trước sử dụng được của %s, chỉ chừa khoảng 5%% lề an toàn xung quanh.
+
+Không được giữ QR nhỏ như phiên bản trước.
+
+Việc tăng kích thước phải thực hiện bằng cách phóng to TOÀN BỘ QR như một layer duy nhất, không được tái tạo lại cấu trúc QR.
+
+Cho phép QR có phong cách đồng nhất với %s.
+
+Module tối có thể mang:
+%s
+
+Module sáng có thể hòa với %s.
+
+Mục tiêu là:
+QR nhìn như một phần của %s,
+không phải một QR đen trắng dán lên trên.
+
+QR phải lớn, cân đối và sử dụng gần tối đa diện tích mặt phẳng có thể dùng.
+
+Nhưng tuyệt đối không được thay đổi vị trí tương đối của các module trong ma trận QR.
+
+Nếu cần đánh đổi:
+ưu tiên giữ đúng bố cục QR trước,
+sau đó ưu tiên QR đủ lớn,
+sau đó tối ưu phong cách và trạng thái vật thể.`,
+		targetSurface,          // 1
+		darkModuleStyleBullets, // 2
+		targetSurface,          // 3
+		darkModuleExample,      // 4
+		lightModuleExample,     // 5
+		targetSurface,          // 6
+		targetSurface,          // 7
+		targetSurface,          // 8
+		targetSurface,          // 9
+		targetSurface,          // 10
+		targetSurface,          // 11
+		targetSurface,          // 12
+		targetSurface,          // 13
+		targetSurface,          // 14
+		lightModuleExample,     // 15
+		surfaceStateDetails,    // 16
+		sceneDescription,       // 17
+		targetSurface,          // 18
+		targetSurface,          // 19
+		targetSurface,          // 20
+		darkModuleStyleBullets, // 21
+		lightModuleExample,     // 22
+		targetSurface,          // 23
 	)
 
 	return prompt, StandardNegativePrompt

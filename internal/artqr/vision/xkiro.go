@@ -22,19 +22,25 @@ import (
 )
 
 type StyleAnalysisResult struct {
-	Style               string         `json:"style"`
-	SubjectDetails      map[string]any `json:"subject_details,omitempty"`
-	Palette             []string       `json:"palette"`
-	Composition         map[string]any `json:"composition,omitempty"`
-	Lighting            string         `json:"lighting"`
-	Texture             string         `json:"texture"`
-	Contrast            string         `json:"contrast,omitempty"`
-	QRRegionAnalysis    map[string]any `json:"qr_region_analysis,omitempty"`
-	QRRegionDescription string         `json:"qr_region_description,omitempty"`
-	IntegrationStrategy []string       `json:"integration_strategy,omitempty"`
-	PatchPrompt         string         `json:"patch_prompt,omitempty"`
-	GeneratedPrompt     string         `json:"generated_prompt"`
-	RawJSON             string         `json:"raw_json,omitempty"`
+	Style               string           `json:"style"`
+	SceneDescription    string           `json:"scene_description,omitempty"`
+	TargetSurface       string           `json:"target_surface,omitempty"`
+	OptimalPlacement    *model.Placement `json:"optimal_placement,omitempty"`
+	DarkModuleStyle     []string         `json:"dark_module_style,omitempty"`
+	LightModuleStyle    string           `json:"light_module_style,omitempty"`
+	SurfaceState        string           `json:"surface_state,omitempty"`
+	SubjectDetails      map[string]any   `json:"subject_details,omitempty"`
+	Palette             []string         `json:"palette"`
+	Composition         map[string]any   `json:"composition,omitempty"`
+	Lighting            string           `json:"lighting"`
+	Texture             string           `json:"texture"`
+	Contrast            string           `json:"contrast,omitempty"`
+	QRRegionAnalysis    map[string]any   `json:"qr_region_analysis,omitempty"`
+	QRRegionDescription string           `json:"qr_region_description,omitempty"`
+	IntegrationStrategy []string         `json:"integration_strategy,omitempty"`
+	PatchPrompt         string           `json:"patch_prompt,omitempty"`
+	GeneratedPrompt     string           `json:"generated_prompt"`
+	RawJSON             string           `json:"raw_json,omitempty"`
 }
 
 type StyleAnalyzer interface {
@@ -200,38 +206,33 @@ func (a *XKiroVisionAnalyzer) AnalyzeStyle(ctx context.Context, refImgBytes []by
 
 	systemInstruction := `You are an expert art director, forensic visual AI, and ControlNet QR prompt engineer.
 Analyze the provided artwork in exhaustive forensic detail and construct a precision JSON breakdown for seamless ControlNet QR embedding.
-The QR placement target is in the ` + regionName + ` region (normalized coordinates: X=` + fmt.Sprintf("%.2f", placement.X) + `, Y=` + fmt.Sprintf("%.2f", placement.Y) + `, Size=` + fmt.Sprintf("%.2f", placement.Size) + `).
+The user wants to place an authoritative QR code onto a prominent target surface in this artwork, scaling the QR so that it covers approximately 90% of the usable surface area (with ~5% safe margins around), preserving 100% of the QR matrix topology and relative module positions while stylizing the modules to blend into the material surface.
+The default QR placement target is in the ` + regionName + ` region (normalized coordinates: X=` + fmt.Sprintf("%.2f", placement.X) + `, Y=` + fmt.Sprintf("%.2f", placement.Y) + `, Size=` + fmt.Sprintf("%.2f", placement.Size) + `).
 
 Respond with a strictly formatted, rich JSON object with this exact schema:
 {
-  "style": "Exact artistic genre, historical medium (e.g. 19th Century Royal Military Oil Portrait, Impasto canvas, Baroque Chiaroscuro)",
-  "subject_details": {
-    "identity": "Exhaustive description of subject, facial structure, gaze, haircut, costume, uniform collars, shoulder epaulets, cords, medals, ribbons",
-    "wardrobe_material": "Detailed fabric types (heavy velvet, gold bullion embroidery, braided aguillette, silk sash, metallic badges)",
-    "color_scheme": "Color accents (navy blue, crimson scarlet, burnished gold, antique bronze)",
-    "protected_regions": "Face, eyes, hair, posture, and facial expression must remain 100% untouched"
+  "style": "Exact artistic genre and visual medium (e.g. Doraemon anime cartoon, 19th Century Oil Portrait, Cyberpunk Neon)",
+  "scene_description": "Detailed description in Vietnamese of the artwork scene, subjects, characters, colors, background elements (e.g. cảnh hoạt hình Doraemon với cánh tay xanh, bàn tay trắng, miếng bánh mì và nền tia đỏ vàng)",
+  "target_surface": "Exact physical object / surface in Vietnamese where QR should be placed (e.g. mặt trước miếng bánh mì, mặt trước áo khoác, phiến gỗ sồi, mặt trước tấm biển hiệu)",
+  "optimal_placement": {
+    "x": 0.41,
+    "y": 0.28,
+    "size": 0.30
   },
-  "palette": ["#hex1", "#hex2", "#hex3", "#hex4", "#hex5"],
-  "composition": {
-    "main_subject": "Position, framing, and focal points",
-    "background": "Atmospheric background, vignette lighting, dark textured canvas",
-    "foreground": "Details of foreground clothing and adornments"
-  },
-  "lighting": "Precise lighting direction, key light, warm ambient bounce, rim light highlights on metallic epaulets and soft facial shadows",
-  "texture": "Visible brushwork, canvas weave, fabric stitching, metallic reflections, skin pores",
-  "contrast": "Luminance ratio between highlights and deep shadows",
-  "qr_region_analysis": {
-    "target_surface": "Exact physical area where QR is placed (e.g. embroidered navy jacket chest with diagonal sash)",
-    "local_textures": "Texture features in this specific crop (gold rope braids, medal ribbons, velvet folds)",
-    "camouflage_technique": "How to weave QR modules naturally into fabric folds, golden embroidery threads, and chiaroscuro shadows"
-  },
-  "integration_strategy": [
-    "Carve dark QR finder eyes and modules into the deep shadows of the fabric folds and navy cloth",
-    "Transform light QR modules into shimmering gold thread highlights and reflection points",
-    "Blend QR borders naturally along the curves of the cords and ribbons"
+  "dark_module_style": [
+    "nâu bánh nướng",
+    "nâu cháy",
+    "màu caramel đậm",
+    "shading nhẹ",
+    "cảm giác vật liệu bánh mì"
   ],
-  "patch_prompt": "Intricate gold bullion embroidery, military uniform woven fabric texture, heavy navy cloth with gold threads and crimson sash, dramatic studio lighting, sharp contrasting weave, highly detailed masterwork craft",
-  "generated_prompt": "Masterpiece portrait preserving the exact subject, posture, gold braided military uniform, and atmospheric lighting of the artwork with ornate golden embroidery threads"
+  "light_module_style": "màu bánh mì sáng tự nhiên / màu ruột bánh vàng kem",
+  "surface_state": "Mô tả trạng thái và màu sắc chi tiết cần tối ưu của bề mặt vật thể bằng tiếng Việt (e.g. Miếng bánh mì trong ảnh kết quả phải trông ĐÃ ĐƯỢC NƯỚNG CHÍN, phần ruột bánh màu vàng kem ấm hơn, viền bánh nâu vàng rõ, không làm bánh bị sống hoặc trắng bệch...)",
+  "palette": ["#hex1", "#hex2", "#hex3", "#hex4", "#hex5"],
+  "lighting": "Precise lighting direction, warmth and bounce highlights",
+  "texture": "Visible texture details (e.g. thớ bánh mì nướng, sợi vải dệt, thớ gỗ mộc...)",
+  "contrast": "Luminance ratio between highlights and deep shadows",
+  "generated_prompt": "Masterpiece summary prompt in Vietnamese"
 }`
 
 	userPrompt := "Analyze this reference image and target region for QR embedding. Image 1 is the full artwork. "

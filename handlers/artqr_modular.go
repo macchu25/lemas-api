@@ -15,6 +15,8 @@ import (
 	"xkiro-backend/db"
 	"xkiro-backend/internal/artqr"
 	"xkiro-backend/internal/artqr/model"
+	"xkiro-backend/internal/artqr/prompt"
+	"xkiro-backend/internal/artqr/vision"
 	"xkiro-backend/models"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -323,20 +325,51 @@ func AnalyzeStyleHandler(w http.ResponseWriter, r *http.Request) {
 
 	result, err := defaultArtQRService.AnalyzeStyle(r.Context(), refBytes, placement)
 	if err != nil || result == nil {
+		fallbackResult := &vision.StyleAnalysisResult{
+			Style:            "Tác phẩm nghệ thuật tự nhiên",
+			SceneDescription: "bức ảnh tham chiếu với các chi tiết tự nhiên",
+			TargetSurface:    "bề mặt vật thể chính trong ảnh",
+			Palette:          []string{"#8b0000", "#ffd700", "#1a202c", "#f5d0a9"},
+			Lighting:         "Ánh sáng studio cinematic",
+			Texture:          "Vân bề mặt và chi tiết tự nhiên",
+			DarkModuleStyle:  []string{"màu sắc đậm tương thích với bề mặt", "shading tự nhiên theo hướng sáng"},
+			LightModuleStyle: "màu sáng tự nhiên của bề mặt",
+			SurfaceState:     "Bề mặt vật thể trong ảnh phải trông hoàn thiện, sắc nét và màu sắc hài hòa.",
+		}
+		fullPrompt, _ := prompt.BuildCustomReferencePrompt(fallbackResult, "", placement)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"style":    "Chân dung nghệ thuật / Tác phẩm gốc",
-			"palette":  []string{"#8b0000", "#ffd700", "#1a202c", "#f5d0a9"},
-			"lighting": "Ánh sáng studio cinematic",
-			"texture":  "Vân vải & chi tiết tự nhiên",
-			"prompt":   "Masterpiece portrait preserving the exact subject, clothing, and background of the image with ornate golden bullion embroidery cords and brass medals",
+			"style":              fallbackResult.Style,
+			"scene_description":  fallbackResult.SceneDescription,
+			"target_surface":     fallbackResult.TargetSurface,
+			"optimal_placement":  placement,
+			"dark_module_style":  fallbackResult.DarkModuleStyle,
+			"light_module_style": fallbackResult.LightModuleStyle,
+			"surface_state":      fallbackResult.SurfaceState,
+			"palette":            fallbackResult.Palette,
+			"lighting":           fallbackResult.Lighting,
+			"texture":            fallbackResult.Texture,
+			"prompt":             fullPrompt,
 		})
 		return
 	}
 
+	targetPlacement := placement
+	if result.OptimalPlacement != nil && result.OptimalPlacement.IsValid() {
+		targetPlacement = *result.OptimalPlacement
+	}
+
+	fullPrompt, _ := prompt.BuildCustomReferencePrompt(result, "", targetPlacement)
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"style":                result.Style,
+		"scene_description":    result.SceneDescription,
+		"target_surface":       result.TargetSurface,
+		"optimal_placement":    targetPlacement,
+		"dark_module_style":    result.DarkModuleStyle,
+		"light_module_style":   result.LightModuleStyle,
+		"surface_state":        result.SurfaceState,
 		"palette":              result.Palette,
 		"subject_details":      result.SubjectDetails,
 		"composition":          result.Composition,
@@ -346,7 +379,7 @@ func AnalyzeStyleHandler(w http.ResponseWriter, r *http.Request) {
 		"qr_region_analysis":   result.QRRegionAnalysis,
 		"integration_strategy": result.IntegrationStrategy,
 		"patch_prompt":         result.PatchPrompt,
-		"prompt":               result.GeneratedPrompt,
+		"prompt":               fullPrompt,
 		"raw_json":             result.RawJSON,
 	})
 }
