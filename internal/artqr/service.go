@@ -724,13 +724,37 @@ func (s *Service) processJob(job *model.ArtQRJob, binaryMask *qr.BinaryQRMask, p
 	job.UpdateStatus("generating", 35)
 
 	// Step B: MachGen Two-Reference Synthesis
-	// Collect all active image generation keys (apigiare.vn, machgen.ai, etc.)
+	// Collect all active image generation keys (prioritizing native MachGen GPT-Image-2)
 	var candidates []provider.EndpointConfig
+
+	// 1. Env-configured MachGen (api.machgen.ai with GPT-Image-2) takes TOP priority
+	envMachKey := strings.TrimSpace(os.Getenv("MACHGEN_API_KEY"))
+	envMachURL := strings.TrimSpace(os.Getenv("MACHGEN_API_URL"))
+	if envMachURL == "" {
+		envMachURL = strings.TrimSpace(os.Getenv("MACHGEN_APT_URL"))
+	}
+	if envMachURL == "" || strings.HasPrefix(envMachKey, "MGA_") {
+		envMachURL = "https://api.machgen.ai"
+	}
+	envMachModel := strings.TrimSpace(os.Getenv("MACHGEN_MODEL"))
+	if envMachModel == "" || strings.EqualFold(envMachModel, "flux") {
+		envMachModel = "GPT-Image-2"
+	}
+	if envMachKey != "" {
+		candidates = append(candidates, provider.EndpointConfig{
+			BaseURL: envMachURL,
+			APIKey:  envMachKey,
+			Model:   envMachModel,
+			Name:    "MachGen Native (GPT-Image-2)",
+		})
+	}
+
+	// 2. Active image keys from rotator (apigiare.vn, machgen.ai, etc.)
 	if services.DefaultRotator != nil {
 		for _, k := range services.DefaultRotator.GetAllActiveImageKeys() {
 			model := k.Model
 			if model == "" {
-				model = "gpt-image-2"
+				model = "GPT-Image-2"
 			}
 			candidates = append(candidates, provider.EndpointConfig{
 				BaseURL: k.BaseURL,
@@ -740,7 +764,8 @@ func (s *Service) processJob(job *model.ArtQRJob, binaryMask *qr.BinaryQRMask, p
 			})
 		}
 	}
-	// If machgen provider has a custom endpoint configured (e.g. mock test server or direct host), prioritize it
+
+	// 3. If machgen provider has a custom endpoint configured, add it
 	if mURL := s.machgen.GetBaseURL(); mURL != "" && (strings.Contains(mURL, "127.0.0.1") || strings.Contains(mURL, "localhost") || strings.Contains(mURL, "machgen.ai")) {
 		candidates = append([]provider.EndpointConfig{
 			{
@@ -750,30 +775,6 @@ func (s *Service) processJob(job *model.ArtQRJob, binaryMask *qr.BinaryQRMask, p
 				Name:    "Configured MachGen Override",
 			},
 		}, candidates...)
-	}
-
-	// Fallback to env-configured MachGen if candidate list is empty
-	if len(candidates) == 0 {
-		envKey := strings.TrimSpace(os.Getenv("MACHGEN_API_KEY"))
-		envURL := strings.TrimSpace(os.Getenv("MACHGEN_API_URL"))
-		if envURL == "" {
-			envURL = strings.TrimSpace(os.Getenv("MACHGEN_APT_URL"))
-		}
-		if envURL == "" || strings.HasPrefix(envKey, "MGA_") {
-			envURL = "https://api.machgen.ai"
-		}
-		envModel := strings.TrimSpace(os.Getenv("MACHGEN_MODEL"))
-		if envModel == "" || strings.EqualFold(envModel, "flux") {
-			envModel = "GPT-Image-2"
-		}
-		if envKey != "" || envURL != "" {
-			candidates = append(candidates, provider.EndpointConfig{
-				BaseURL: envURL,
-				APIKey:  envKey,
-				Model:   envModel,
-				Name:    "Env MachGen",
-			})
-		}
 	}
 
 	// Anchor the QR on the exact preset rectangle before asking the image model
